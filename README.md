@@ -208,6 +208,8 @@ python bodian_cli.py probe check-right --id MUSIC_ID --free-sign FREE_SIGN
 
 请不要公开分享 `.bodian/` 目录内容。该目录已在 `.gitignore` 中排除。
 
+## 感谢
+[linux.do](linux.do)
 ## 许可
 
 本项目使用 MIT License。
