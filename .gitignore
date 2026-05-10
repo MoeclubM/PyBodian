@@ -11,6 +11,9 @@ htmlcov/
 venv/
 env/
 
+# doc
+UPDATE_NOTES.md
+
 # Local application state
 .bodian/
 
@@ -21,9 +24,15 @@ downloads/
 *.tmp
 *.temp
 *.log
+overlay_*.png
 
 # Editor and OS files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+
+# start-up bat
+启动.bat
+启动.ps1
+一键启动GUI.bat

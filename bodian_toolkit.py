@@ -117,14 +117,24 @@ def load_local_config():
     config = _load_local_json(CONFIG_FILE, {
         "download_dir": DEFAULT_DOWNLOAD_DIR,
         "quality": "6",
-        "playback_quality": "6",
+        "playback_quality": "2",
         "download_quality": "6",
+        "lyric_overlay_enabled": True,
+        "lyric_overlay_topmost": True,
+        "lyric_overlay_locked": False,
+        "lyric_overlay_theme": 0,
+        "lyric_overlay_opacity": 0.96,
+        "lyric_overlay_geometry": "",
     })
+    if config.get("lyric_overlay_geometry") in ("460x220+120+120", "720x280+120+120"):
+        config["lyric_overlay_geometry"] = ""
     legacy_quality = config.get("quality", "6")
     if not config.get("playback_quality"):
-        config["playback_quality"] = legacy_quality
+        config["playback_quality"] = "2" if legacy_quality == "11" else legacy_quality
     if not config.get("download_quality"):
         config["download_quality"] = legacy_quality
+    if config.get("playback_quality") == "11":
+        config["playback_quality"] = "2"
     return config
 
 

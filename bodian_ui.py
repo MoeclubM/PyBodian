@@ -18,6 +18,7 @@ import webbrowser
 import urwid
 
 from bodian_terminal_images import CoverImageWidget, NativeImageScreen
+from bodian_lyric_overlay import LyricOverlay, THEMES
 from bodian_player import BoDianPlayer
 from bodian_toolkit import (
     AUTH_FILE,
@@ -273,6 +274,8 @@ class BoDianUI:
         self.client = BoDianClient()
         self.player = BoDianPlayer()
         self.queue = queue.Queue()
+        self.playback_request_id = 0
+        self.shutting_down = False
         self.download_dir = self.client.get_local_config("download_dir", DEFAULT_DOWNLOAD_DIR)
 
         self.browser_items = []
@@ -297,11 +300,18 @@ class BoDianUI:
         saved_quality_key = self.client.get_local_config("quality", "6")
         self.playback_quality_key = self.client.get_local_config("playback_quality", saved_quality_key)
         self.download_quality_key = self.client.get_local_config("download_quality", saved_quality_key)
+        self.lyric_overlay_enabled = bool(self.client.get_local_config("lyric_overlay_enabled", True))
+        self.lyric_overlay_topmost = bool(self.client.get_local_config("lyric_overlay_topmost", True))
+        self.lyric_overlay_locked = bool(self.client.get_local_config("lyric_overlay_locked", False))
+        self.lyric_overlay_theme = int(self.client.get_local_config("lyric_overlay_theme", 0) or 0)
+        self.lyric_overlay_opacity = float(self.client.get_local_config("lyric_overlay_opacity", 0.96) or 0.96)
+        self.lyric_overlay_geometry = self.client.get_local_config("lyric_overlay_geometry", "")
         self.login_restore = None
         self.login_deadline = 0
         self.login_qr_code = ""
         self.qr_checking = False
         self.next_qr_poll_at = 0
+        self.lyric_overlay = None
 
         self.status_text = urwid.Text("")
         self.login_text = urwid.Text("")
@@ -367,6 +377,8 @@ class BoDianUI:
         self._update_login_text()
         self._load_recommend()
         self.loop.set_alarm_in(0.4, self._tick)
+        if self.lyric_overlay_enabled:
+            self._ensure_lyric_overlay()
 
     def _build_header(self):
         buttons = urwid.Columns(
@@ -377,6 +389,7 @@ class BoDianUI:
                 ("pack", self._button("账号信息", self._open_auth_info)),
                 ("pack", self._button("登出", self._on_logout)),
                 ("pack", self._button("下载目录", self._open_download_dir)),
+                ("pack", self._button("歌词浮窗", self._toggle_lyric_overlay)),
                 ("pack", self.download_quality_header_button_map),
             ],
             dividechars=1,
@@ -554,7 +567,7 @@ class BoDianUI:
             dividechars=1,
         )
         footer_main = urwid.Pile([controls, self.progress_bar, self.status_text])
-        hints = urwid.Text("快捷键: / 搜索 | Enter 执行或打开 | Space 播放/暂停 | n 下一首 | p 上一首 | s 停止 | r 重播 | [ 后退10秒 | ] 前进10秒 | d 下载 | l 保存歌词 | v 播放页 | Esc 返回 | q 退出")
+        hints = urwid.Text("快捷键: / 搜索 | Enter 执行或打开 | Space 播放/暂停 | n 下一首 | p 上一首 | s 停止 | r 重播 | [ 后退10秒 | ] 前进10秒 | d 下载 | l 保存歌词 | v 播放页 | o 浮窗 | t 置顶 | k 锁定 | c 换色 | Esc 返回 | q 退出")
         footer_cover = urwid.BoxAdapter(self.footer_cover_widget, 4)
         return urwid.Pile(
             [
@@ -590,6 +603,117 @@ class BoDianUI:
     def _set_status(self, message, level="muted"):
         self.status_text.set_text((level, message))
 
+    def _next_playback_request(self):
+        self.playback_request_id += 1
+        return self.playback_request_id
+
+    def _is_current_playback_request(self, request_id):
+        return request_id == self.playback_request_id and not self.shutting_down
+
+    def _overlay_settings(self):
+        return {
+            "lyric_overlay_enabled": self.lyric_overlay_enabled,
+            "lyric_overlay_topmost": self.lyric_overlay_topmost,
+            "lyric_overlay_locked": self.lyric_overlay_locked,
+            "lyric_overlay_theme": self.lyric_overlay_theme,
+            "lyric_overlay_opacity": self.lyric_overlay_opacity,
+            "lyric_overlay_geometry": self.lyric_overlay_geometry,
+        }
+
+    def _save_overlay_settings(self):
+        self.client.set_local_config(**self._overlay_settings())
+
+    def _on_overlay_settings_changed(self, settings):
+        def apply():
+            self.lyric_overlay_enabled = bool(settings.get("lyric_overlay_enabled", self.lyric_overlay_enabled))
+            self.lyric_overlay_topmost = bool(settings.get("lyric_overlay_topmost", self.lyric_overlay_topmost))
+            self.lyric_overlay_locked = bool(settings.get("lyric_overlay_locked", self.lyric_overlay_locked))
+            self.lyric_overlay_theme = int(settings.get("lyric_overlay_theme", self.lyric_overlay_theme) or 0)
+            self.lyric_overlay_opacity = float(settings.get("lyric_overlay_opacity", self.lyric_overlay_opacity) or self.lyric_overlay_opacity)
+            self.lyric_overlay_geometry = settings.get("lyric_overlay_geometry", self.lyric_overlay_geometry)
+            self._save_overlay_settings()
+
+        if threading.current_thread() is threading.main_thread():
+            apply()
+        else:
+            self.queue.put(apply)
+
+    def _on_overlay_closed(self):
+        def apply():
+            self.lyric_overlay = None
+            self._save_overlay_settings()
+
+        if threading.current_thread() is threading.main_thread():
+            apply()
+        else:
+            self.queue.put(apply)
+
+    def _ensure_lyric_overlay(self):
+        if self.lyric_overlay:
+            return self.lyric_overlay
+        self.lyric_overlay = LyricOverlay(
+            settings=self._overlay_settings(),
+            on_settings_change=self._on_overlay_settings_changed,
+            on_closed=self._on_overlay_closed,
+        )
+        self.lyric_overlay.start()
+        if not self.lyric_overlay.is_alive():
+            self.lyric_overlay = None
+            self.lyric_overlay_enabled = False
+            self._save_overlay_settings()
+            self._set_status("歌词浮窗启动失败", "warn")
+            return None
+        self._push_lyric_overlay(force=True)
+        return self.lyric_overlay
+
+    def _push_lyric_overlay(self, force=False):
+        if not self.lyric_overlay:
+            return
+        if not force and not self.current_song and not self.current_lyric_raw:
+            return
+        song_title = self.current_song["name"] if self.current_song else ""
+        artist = self.current_song["artist"] if self.current_song else ""
+        text = self.current_lyric_raw or ("开始播放后加载歌词" if not self.current_song else "正在加载歌词")
+        self.lyric_overlay.update(
+            song_title=song_title,
+            artist=artist,
+            text=text,
+            lines=list(self.current_lyric_lines),
+            active_index=self.active_lyric_index,
+        )
+
+    def _toggle_lyric_overlay(self, *_args):
+        if self.lyric_overlay:
+            self.lyric_overlay.close()
+            self.lyric_overlay = None
+            self._set_status("歌词浮窗已关闭")
+            return
+        self.lyric_overlay_enabled = True
+        self._save_overlay_settings()
+        self._ensure_lyric_overlay()
+        self._set_status("歌词浮窗已开启")
+
+    def _toggle_lyric_overlay_topmost(self, *_args):
+        self.lyric_overlay_topmost = not self.lyric_overlay_topmost
+        self._save_overlay_settings()
+        if self.lyric_overlay:
+            self.lyric_overlay.set_topmost(self.lyric_overlay_topmost)
+        self._set_status(f"歌词浮窗置顶: {'开启' if self.lyric_overlay_topmost else '关闭'}")
+
+    def _toggle_lyric_overlay_lock(self, *_args):
+        self.lyric_overlay_locked = not self.lyric_overlay_locked
+        self._save_overlay_settings()
+        if self.lyric_overlay:
+            self.lyric_overlay.set_locked(self.lyric_overlay_locked)
+        self._set_status(f"歌词浮窗锁定: {'开启' if self.lyric_overlay_locked else '关闭'}")
+
+    def _cycle_lyric_overlay_theme(self, *_args):
+        self.lyric_overlay_theme = (self.lyric_overlay_theme + 1) % len(THEMES)
+        self._save_overlay_settings()
+        if self.lyric_overlay:
+            self.lyric_overlay.next_theme()
+        self._set_status("歌词浮窗颜色已切换")
+
     def _async(self, status, worker, done):
         self._set_status(status)
 
@@ -602,6 +726,43 @@ class BoDianUI:
                 self.queue.put(lambda message=message: done(None, message))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _confirm_exit(self, *_args):
+        if self.loop.widget is not self.frame:
+            self._close_overlay()
+        body = urwid.Pile(
+            [
+                urwid.Text("确认退出并停止播放吗？"),
+                urwid.Divider(),
+                urwid.Columns(
+                    [
+                        ("pack", self._button("退出", self._exit_app)),
+                        ("pack", self._button("取消", lambda *_: self._close_overlay())),
+                    ],
+                    dividechars=1,
+                ),
+            ]
+        )
+        self._open_overlay("退出确认", body)
+
+    def _shutdown(self):
+        self.shutting_down = True
+        self._next_playback_request()
+        if self.lyric_overlay:
+            self.lyric_overlay.close()
+            self.lyric_overlay = None
+        self.player.close()
+        if sys.platform == "win32":
+            try:
+                os.system("taskkill /IM ffplay.exe /T /F >nul 2>&1")
+            except Exception:
+                pass
+
+    def _exit_app(self, *_args):
+        if self.loop.widget is not self.frame:
+            self._close_overlay()
+        self._shutdown()
+        raise urwid.ExitMainLoop()
 
     def _clear_browser(self):
         self.browser_items = []
@@ -811,6 +972,7 @@ class BoDianUI:
         lines = text.splitlines() or ["暂无歌词"]
         self.lyric_walker[:] = [urwid.Text(("muted", line)) for line in lines]
         self.player_lyric_walker[:] = [urwid.Text(("muted", line)) for line in lines]
+        self._push_lyric_overlay(force=True)
 
     def _set_playing_detail(self, song):
         if not song:
@@ -1010,6 +1172,7 @@ class BoDianUI:
                             translations[index] = True
             self.current_lyric_lines.append({**line, "translation": translations[index]})
         self._refresh_lyric_rows()
+        self._push_lyric_overlay(force=True)
 
     def _activate_song_row(self, _button=None, user_data=None):
         items = self.current_albums if self.center_mode == "album" else self.current_songs
@@ -1127,7 +1290,24 @@ class BoDianUI:
         self.play_queue_index = index
         self._start_playback(self.play_queue[index])
 
+    def _play_next_from_context(self):
+        if not self.current_song or not self.current_songs:
+            return False
+        current_id = self.current_song.get("id")
+        for index, song in enumerate(self.current_songs):
+            if song.get("id") != current_id:
+                continue
+            if index + 1 >= len(self.current_songs):
+                return False
+            self.play_queue = list(self.current_songs)
+            self.play_queue_index = index + 1
+            self._start_playback(self.play_queue[self.play_queue_index])
+            return True
+        return False
+
     def _start_playback(self, song, start_ms=0):
+        request_id = self._next_playback_request()
+        self.player.stop(reset_position=False)
         choices = self.client.get_song_quality_choices(song)
         requested_quality_key = self.client.resolve_song_quality(song, self.playback_quality_key)
         if not requested_quality_key:
@@ -1139,7 +1319,7 @@ class BoDianUI:
             start_index = choice_keys.index(requested_quality_key)
         except ValueError:
             start_index = 0
-        attempt_keys = choice_keys[start_index:] or [requested_quality_key]
+        attempt_keys = choice_keys[start_index:start_index + 2] or [requested_quality_key]
 
         def worker():
             last_error = "无法获取播放链接"
@@ -1159,19 +1339,16 @@ class BoDianUI:
                     if quality_key == requested_quality_key:
                         fallback_reason = f"{requested_desc} 未返回可用链接"
                     continue
-                if actual_fmt != fmt:
-                    last_error = f"服务端实际返回 {actual_fmt.upper()}"
-                    if quality_key == requested_quality_key:
-                        fallback_reason = f"{requested_desc} 实际返回 {actual_fmt.upper()}"
-                    continue
                 if not self.client.can_local_playback_format(actual_fmt):
                     last_error = f"当前本地播放器无法直接解码 {actual_fmt.upper()} 码流"
                     if quality_key == requested_quality_key:
                         fallback_reason = f"{requested_desc} 为 {actual_fmt.upper()}，当前本地播放器无法直接解码"
                     continue
                 fallback_note = ""
+                if actual_fmt != fmt:
+                    fallback_note = f"服务端实际返回 {actual_fmt.upper()}"
                 if quality_key != requested_quality_key:
-                    fallback_note = f"当前歌曲已自动降为 {desc}"
+                    fallback_note = f"当前歌曲已自动降为 {desc}" if not fallback_note else f"{fallback_note}，并自动降为 {desc}"
                     if fallback_reason:
                         fallback_note = f"{fallback_note}，原因: {fallback_reason}"
                 return {
@@ -1189,6 +1366,8 @@ class BoDianUI:
             }
 
         def done(result, error):
+            if not self._is_current_playback_request(request_id):
+                return
             if error:
                 self._set_status(f"播放失败: {error}", "warn")
                 return
@@ -1214,6 +1393,8 @@ class BoDianUI:
             self._set_playing_detail(song)
             self._load_cover_image(song)
             quality_desc = used_desc_local
+            if actual_fmt != QUALITY_OPTIONS[used_quality_key][0]:
+                quality_desc = f"{quality_desc} -> {actual_fmt.upper()}"
             if result["used_quality_key"] != result["requested_quality_key"]:
                 quality_desc = f"{quality_desc} | 已自动降档"
             if "/pay3_v2/" in url:
@@ -1250,6 +1431,7 @@ class BoDianUI:
 
     def _toggle_playback(self, *_args):
         if self.player.state == "playing":
+            self._next_playback_request()
             self.player.pause()
             self._set_status("已暂停")
             return
@@ -1290,7 +1472,15 @@ class BoDianUI:
             self._set_status("当前没有正在播放的歌曲", "warn")
             return
         target_ms = self.player.get_position_ms() + delta_ms if position_ms is None else position_ms
+        if self.player.duration_ms and target_ms >= self.player.duration_ms - 1000:
+            self.player.stop()
+            self.player.just_finished = False
+            if not self._play_next_from_context():
+                self._next_playback_request()
+                self._set_status(f"播放结束: {self.current_song['name']}")
+            return
         self.player.seek(target_ms)
+        self.player.just_finished = False
         if not quiet:
             self._set_status(f"已定位到 {_fmt_dur(self.player.get_position_ms() // 1000)}")
 
@@ -1301,6 +1491,7 @@ class BoDianUI:
         self._start_playback(self.current_song, start_ms=0)
 
     def _stop_playback(self, *_args):
+        self._next_playback_request()
         self.player.stop()
         self.current_song = None
         self.current_playback_quality_key = None
@@ -1314,6 +1505,7 @@ class BoDianUI:
         else:
             self._update_player_playback_quality_button()
         self._set_status("已停止播放")
+        self._push_lyric_overlay(force=True)
 
     def _download_selected_song(self, *_args):
         song = self.detail_song
@@ -1958,6 +2150,7 @@ class BoDianUI:
         )
 
     def _on_logout(self, *_args):
+        self._next_playback_request()
         self.player.stop()
         self.client.logout()
         self.current_song = None
@@ -1973,6 +2166,7 @@ class BoDianUI:
             self._update_player_playback_quality_button()
         self._update_login_text()
         self._set_status("已登出")
+        self._push_lyric_overlay(force=True)
 
     def _after_login_action(self, result, error, success_text):
         if error:
@@ -1986,7 +2180,7 @@ class BoDianUI:
 
     def _on_input(self, key):
         if key in ("q", "Q", "ctrl c", "ctrl C"):
-            self.player.close()
+            self._shutdown()
             raise urwid.ExitMainLoop()
         if key == "esc":
             if self.loop.widget is not self.frame:
@@ -2027,6 +2221,18 @@ class BoDianUI:
         if key in ("v", "V"):
             self._toggle_playback_page()
             return
+        if key in ("o", "O"):
+            self._toggle_lyric_overlay()
+            return
+        if key in ("t", "T"):
+            self._toggle_lyric_overlay_topmost()
+            return
+        if key in ("k", "K"):
+            self._toggle_lyric_overlay_lock()
+            return
+        if key in ("c", "C"):
+            self._cycle_lyric_overlay_theme()
+            return
         if key == " ":
             self._toggle_playback()
         elif key in ("n", "N"):
@@ -2059,9 +2265,15 @@ class BoDianUI:
 
         self._update_browser_from_focus()
         self._update_detail_from_focus()
-        if self.player.poll_finished() and self.play_queue and self.play_queue_index + 1 < len(self.play_queue):
-            self.play_queue_index += 1
-            self._start_playback(self.play_queue[self.play_queue_index])
+        if self.player.poll_finished() and self.player.just_finished:
+            self.player.just_finished = False
+            if self._play_next_from_context():
+                pass
+            elif self.play_queue and self.play_queue_index + 1 < len(self.play_queue):
+                self.play_queue_index += 1
+                self._start_playback(self.play_queue[self.play_queue_index])
+            elif self.current_song:
+                self._set_status(f"播放结束: {self.current_song['name']}")
 
         position_ms = self.player.get_position_ms()
         total_ms = self.player.duration_ms
@@ -2083,6 +2295,7 @@ class BoDianUI:
             return
         self.active_lyric_index = active
         self._refresh_lyric_rows()
+        self._push_lyric_overlay()
         if active < len(self.lyric_walker):
             self.lyric_list.set_focus(active)
         if active < len(self.player_lyric_walker):
@@ -2092,9 +2305,9 @@ class BoDianUI:
         try:
             self.loop.run()
         except KeyboardInterrupt:
-            pass
+            self._shutdown()
         finally:
-            self.player.close()
+            self._shutdown()
 
 
 def main():
