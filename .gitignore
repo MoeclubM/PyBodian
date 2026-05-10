@@ -11,6 +11,9 @@ htmlcov/
 venv/
 env/
 
+# doc
+UPDATE_NOTES.md
+
 # Local application state
 .bodian/
 
@@ -28,3 +31,8 @@ overlay_*.png
 .idea/
 .DS_Store
 Thumbs.db
+
+# start-up bat
+启动.bat
+启动.ps1
+一键启动GUI.bat
