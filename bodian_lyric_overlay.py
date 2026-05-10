@@ -298,7 +298,7 @@ class _TkLyricOverlay:
         if height > 180 or y < int(screen_h * 0.42):
             return self._default_geometry()
         width = min(max(width, 560), max(560, screen_w - 40))
-        height = min(max(height, 76), 140)
+        height = min(max(height, 76), DEFAULT_HEIGHT)
         x = min(max(x, 10), max(10, screen_w - width - 10))
         y = min(max(y, 30), max(30, screen_h - height - 24))
         return f"{width}x{height}+{x}+{y}"

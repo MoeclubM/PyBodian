@@ -21,6 +21,7 @@ downloads/
 *.tmp
 *.temp
 *.log
+overlay_*.png
 
 # Editor and OS files
 .vscode/
