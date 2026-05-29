@@ -937,8 +937,9 @@ class BoDianUI:
             self.selected_cover_widget.set_image(cached_binary)
             self.frame._invalidate()
             return
-        self.selected_cover_widget.set_placeholder("封面加载中")
-        self.frame._invalidate()
+        if not self.selected_cover_widget.image_binary:
+            self.selected_cover_widget.set_placeholder("封面加载中")
+            self.frame._invalidate()
 
         def run():
             try:
@@ -2044,6 +2045,9 @@ class BoDianUI:
         self._update_browser_from_focus(force=True)
         self._update_detail_from_focus(force=True)
         self._refresh_song_row_labels()
+        self.selected_cover_widget._invalidate()
+        self.cover_widget._invalidate()
+        self.footer_cover_widget._invalidate()
         self.frame._invalidate()
         self._set_status("已返回主页面")
 
