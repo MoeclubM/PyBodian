@@ -192,6 +192,24 @@ class CoverImageWidget(urwid.WidgetWrap):
         self.placement_id = self.image_id
         super().__init__(urwid.Filler(self.text, valign="middle"))
 
+    def sizing(self):
+        return frozenset([urwid.BOX, urwid.FLOW])
+
+    def rows(self, size, focus=False):
+        maxcol = size[0]
+        if not self.image_binary or maxcol <= 0:
+            return self.text.rows((maxcol,), focus)
+        self.get_native_image_payload()
+        if not self.image_width or not self.image_height:
+            return self.text.rows((maxcol,), focus)
+        image_area_cols = min(maxcol, self.max_cols) if self.max_cols else maxcol
+        if self.fill:
+            return max(1, self.max_rows or image_area_cols)
+        _, draw_rows = _fit_native_image_cells(
+            self.image_width, self.image_height, image_area_cols, image_area_cols * 4
+        )
+        return max(1, draw_rows)
+
     def selectable(self):
         return self.on_activate is not None
 
@@ -249,7 +267,7 @@ class CoverImageWidget(urwid.WidgetWrap):
         if not self.image_binary or not size or size[0] <= 0:
             return super().render(size, focus=focus)
         outer_cols = size[0]
-        outer_rows = size[1] if len(size) > 1 else (self.max_rows or size[0])
+        outer_rows = size[1] if len(size) > 1 else self.rows(size, focus)
         if outer_rows <= 0:
             return super().render(size, focus=focus)
         self.get_native_image_payload()
@@ -260,7 +278,7 @@ class CoverImageWidget(urwid.WidgetWrap):
         else:
             draw_cols, draw_rows = _fit_native_image_cells(self.image_width, self.image_height, image_area_cols, image_area_rows)
         left = max(0, (outer_cols - draw_cols) // 2)
-        top = 0
+        top = max(0, (outer_rows - draw_rows) // 2)
         canvas = SolidCanvas(" ", outer_cols, outer_rows)
         canvas.coords[f"native-image-{self.image_id}"] = (
             left,

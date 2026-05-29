@@ -504,7 +504,7 @@ class BoDianUI:
                                 "weight",
                                 1,
                                 urwid.Padding(
-                                    urwid.Filler(self.cover_widget, valign="top", top=2, bottom=0),
+                                    urwid.Filler(self.cover_widget, valign="middle"),
                                     left=3,
                                     right=1,
                                 ),
