@@ -12,9 +12,6 @@ import sys
 import threading
 import time
 import unicodedata
-import urllib.parse
-import webbrowser
-
 import urwid
 
 from bodian_terminal_images import CoverImageWidget, NativeImageScreen
@@ -26,6 +23,8 @@ from bodian_toolkit import (
     BoDianClient,
     _detect_ext,
     _fmt_dur,
+    _generate_qr_png,
+    _make_qr_url,
     _sanitize,
 )
 
@@ -60,6 +59,7 @@ SONG_ALBUM_COL = 18
 ALBUM_NAME_COL = 28
 ALBUM_DATE_COL = 10
 ALBUM_COUNT_COL = 6
+RECOMMEND_VISIBLE_COUNT = 10
 
 
 def _display_width(text):
@@ -279,6 +279,10 @@ class BoDianUI:
         self.current_songs = []
         self.play_queue = []
         self.play_queue_index = -1
+        self.recommend_mode = False
+        self.recommend_scroll_num = 1
+        self.recommend_last_cold_start_time = 0
+        self.recommend_loading = False
         self.current_song = None
         self.detail_song = None
         self.detail_album = None
@@ -302,11 +306,12 @@ class BoDianUI:
         self.login_qr_code = ""
         self.qr_checking = False
         self.next_qr_poll_at = 0
+        self._qr_overlay_widget = None
 
-        self.status_text = urwid.Text("")
-        self.login_text = urwid.Text("")
-        self.source_text = urwid.Text("当前视图: 推荐")
-        self.now_playing_text = urwid.Text("未播放")
+        self.status_text = urwid.Text("", wrap="clip")
+        self.login_text = urwid.Text("", wrap="clip")
+        self.source_text = urwid.Text("当前视图: 推荐", wrap="clip")
+        self.now_playing_text = urwid.Text("未播放", wrap="clip")
         self.progress_bar = SeekBar(lambda position_ms: self._seek_current(position_ms=position_ms, quiet=True))
         self.detail_text = urwid.Text("请选择歌曲")
         self.cover_widget = CoverImageWidget()
@@ -554,7 +559,7 @@ class BoDianUI:
             dividechars=1,
         )
         footer_main = urwid.Pile([controls, self.progress_bar, self.status_text])
-        hints = urwid.Text("快捷键: / 搜索 | Enter 执行或打开 | Space 播放/暂停 | n 下一首 | p 上一首 | s 停止 | r 重播 | [ 后退10秒 | ] 前进10秒 | d 下载 | l 保存歌词 | v 播放页 | Esc 返回 | q 退出")
+        hints = urwid.Text("快捷键: / 搜索 | Enter 执行或打开 | Space 播放/暂停 | n 下一首 | p 上一首 | s 停止 | r 重播 | [ 后退10秒 | ] 前进10秒 | d 下载 | l 保存歌词 | v 播放页 | Esc 返回 | q 退出", wrap="clip")
         footer_cover = urwid.BoxAdapter(self.footer_cover_widget, 4)
         return urwid.Pile(
             [
@@ -653,6 +658,7 @@ class BoDianUI:
         self._open_playlist_item(item)
 
     def _set_song_list(self, title, songs):
+        self.recommend_mode = title == "推荐"
         self.center_mode = "song"
         self.center_panel.set_title("歌曲")
         self.current_songs = songs
@@ -677,6 +683,7 @@ class BoDianUI:
         self._update_detail_from_focus(force=True)
 
     def _set_album_list(self, title, albums):
+        self.recommend_mode = False
         self.center_mode = "album"
         self.center_panel.set_title("专辑")
         self.current_albums = albums
@@ -1243,6 +1250,7 @@ class BoDianUI:
                 self._set_status(f"开始播放: {song['name']}，{result['fallback_note']}", "warn")
             else:
                 self._set_status(f"开始播放: {song['name']}")
+            self._preload_recommend_if_queue_tail()
             self._show_lyric_text("正在加载歌词")
             self._load_lyric(song)
 
@@ -1272,11 +1280,14 @@ class BoDianUI:
         self._play_song_at()
 
     def _play_next(self, *_args):
-        if not self.play_queue or self.play_queue_index + 1 >= len(self.play_queue):
-            self._set_status("当前没有下一首")
+        if self.play_queue and self.play_queue_index + 1 < len(self.play_queue):
+            self.play_queue_index += 1
+            self._start_playback(self.play_queue[self.play_queue_index])
             return
-        self.play_queue_index += 1
-        self._start_playback(self.play_queue[self.play_queue_index])
+        if self.recommend_mode and self.play_queue:
+            self._load_more_recommend(play_after=True)
+            return
+        self._set_status("当前没有下一首")
 
     def _play_previous(self, *_args):
         if not self.play_queue or self.play_queue_index <= 0:
@@ -1568,11 +1579,59 @@ class BoDianUI:
 
     def _load_recommend(self):
         self._clear_browser()
+        self.recommend_scroll_num = 1
+        self.recommend_last_cold_start_time = int(time.time() * 1000)
         self._async(
             "正在加载推荐",
-            lambda: self.client.get_recommendation_songs(scroll_num=1, total_num=50),
+            lambda: self.client.get_recommendation_songs(
+                scroll_num=self.recommend_scroll_num,
+                total_num=RECOMMEND_VISIBLE_COUNT,
+                last_cold_start_time=self.recommend_last_cold_start_time,
+            ),
             lambda result, error: self._set_song_list("推荐", result) if not error else self._set_status(f"加载推荐失败: {error}", "warn"),
         )
+
+    def _preload_recommend_if_queue_tail(self):
+        if self.recommend_mode and self.play_queue and self.play_queue_index >= len(self.play_queue) - 1:
+            self._load_more_recommend()
+
+    def _load_more_recommend(self, play_after=False):
+        if not self.recommend_mode or self.recommend_loading:
+            return
+        self.recommend_loading = True
+        self.recommend_scroll_num += 1
+
+        def done(result, error):
+            self.recommend_loading = False
+            if error:
+                self._set_status(f"加载下一首推荐失败: {error}", "warn")
+                return
+            self._append_recommend_songs(result or [], play_after=play_after)
+
+        self._async(
+            "正在加载下一首推荐",
+            lambda: self.client.get_recommendation_songs(
+                scroll_num=self.recommend_scroll_num,
+                total_num=1,
+                last_cold_start_time=self.recommend_last_cold_start_time,
+            ),
+            done,
+        )
+
+    def _append_recommend_songs(self, songs, play_after=False):
+        if not songs:
+            return
+        start_index = len(self.current_songs)
+        self.current_songs.extend(songs)
+        if self.play_queue:
+            self.play_queue.extend(songs)
+        focus = self.song_list.focus_position
+        self._rebuild_song_rows()
+        self.song_list.focus_position = focus
+        self.source_text.set_text(f"当前视图: 推荐  ({len(self.current_songs)} 首)")
+        if play_after:
+            self.play_queue_index = start_index
+            self._start_playback(self.play_queue[self.play_queue_index])
 
     def _load_fond(self):
         self._clear_browser()
@@ -1725,12 +1784,8 @@ class BoDianUI:
             self.login_qr_code = result["qr_code"]
             self.login_deadline = time.time() + 120
             self.next_qr_poll_at = 0
-            qr_url = (
-                "https://api.qrserver.com/v1/create-qr-code/"
-                f"?size=280x280&data={urllib.parse.quote(self.login_qr_code)}"
-            )
-            webbrowser.open(qr_url)
-            self._set_status("二维码已在浏览器打开，请用波点移动端扫描确认")
+            self._show_qr_overlay(self.login_qr_code)
+            self._set_status("请用波点移动端扫描二维码确认登录")
 
         self._async("正在请求二维码登录", worker, done)
 
@@ -1747,20 +1802,23 @@ class BoDianUI:
 
         def worker():
             status_data, status_resp = self.client.check_login_qr(self.login_qr_code)
-            return status_data.get("status") if status_data else None, status_resp
+            return status_data, status_resp
 
         def done(result, error):
             self.qr_checking = False
             if error:
                 self._set_status(f"二维码状态检查失败: {error}", "warn")
                 return
-            status, status_resp = result
+            status_data, status_resp = result
+            status = status_data.get("status") if status_data else None
             if status == 1:
                 self.next_qr_poll_at = time.time() + 2
                 self._set_status("等待移动端确认二维码")
                 return
             if status == 3:
-                self._exchange_qr_login()
+                qr_code = self.login_qr_code
+                self.login_qr_code = ""
+                self._exchange_qr_login(qr_code, status_data)
                 return
             if status is None:
                 self.next_qr_poll_at = time.time() + 2
@@ -1770,18 +1828,31 @@ class BoDianUI:
 
         self._async("正在检查二维码状态", worker, done)
 
-    def _exchange_qr_login(self):
+    def _exchange_qr_login(self, qr_code, status_data):
         def worker():
-            data, resp = self.client.users_login(uid="-1", token="")
-            if not data or not self.client.logged_in:
-                raise RuntimeError(resp.get("msg") if isinstance(resp, dict) else "换取凭证失败")
-            return data
+            last_resp = None
+            while time.time() < self.login_deadline:
+                data, resp = self.client.login_from_qr_status(qr_code, status_data)
+                if data and self.client.logged_in:
+                    return data
+                last_resp = resp
+                time.sleep(0.8)
+            raise RuntimeError(last_resp.get("msg") if isinstance(last_resp, dict) else "换取凭证超时")
 
         def done(_result, error):
             if error:
+                self._close_qr_overlay()
+                if self.client.logged_in and self.client.uid != "-1":
+                    self.login_qr_code = ""
+                    self.login_deadline = 0
+                    self.login_restore = None
+                    self._update_login_text()
+                    self._set_status("二维码登录成功")
+                    return
                 self._restore_login_state()
                 self._set_status(f"二维码登录失败: {error}", "warn")
                 return
+            self._close_qr_overlay()
             self.login_qr_code = ""
             self.login_deadline = 0
             self.login_restore = None
@@ -1793,6 +1864,7 @@ class BoDianUI:
     def _restore_login_state(self):
         if not self.login_restore:
             return
+        self._close_qr_overlay()
         old_uid, old_token, old_nickname, old_logged_in = self.login_restore
         self.client.uid = old_uid
         self.client.token = old_token
@@ -1909,6 +1981,37 @@ class BoDianUI:
                 ]
             ),
         )
+
+    def _show_qr_overlay(self, qr_code):
+        """在 TUI 中嵌入显示原版扫码链接二维码"""
+        qr_widget = CoverImageWidget(max_cols=24, max_rows=12)
+        png_data = _generate_qr_png(_make_qr_url(qr_code))
+        qr_widget.set_image(png_data)
+        self._qr_overlay_widget = qr_widget
+        body = urwid.Pile([
+            ("pack", urwid.Text(("muted", "请用波点移动端扫描下方二维码"), align="center", wrap="clip")),
+            ("pack", urwid.Divider()),
+            (12, qr_widget),
+            ("pack", urwid.Divider()),
+            ("pack", urwid.Text(("muted", "扫码后在此界面等待确认..."), align="center", wrap="clip")),
+            ("pack", urwid.Divider()),
+            ("pack", self._button("关闭", lambda *_: self._close_qr_overlay())),
+        ])
+        self.loop.widget = urwid.Overlay(
+            urwid.Filler(urwid.LineBox(body, title="二维码登录"), valign="middle"),
+            self.frame,
+            align="center",
+            width=40,
+            valign="middle",
+            height=18,
+        )
+
+    def _close_qr_overlay(self):
+        """关闭二维码 overlay"""
+        if not self._qr_overlay_widget:
+            return
+        self._qr_overlay_widget = None
+        self.loop.widget = self.frame
 
     def _open_overlay(self, title, body):
         self.loop.widget = urwid.Overlay(
@@ -2059,9 +2162,12 @@ class BoDianUI:
 
         self._update_browser_from_focus()
         self._update_detail_from_focus()
-        if self.player.poll_finished() and self.play_queue and self.play_queue_index + 1 < len(self.play_queue):
-            self.play_queue_index += 1
-            self._start_playback(self.play_queue[self.play_queue_index])
+        if self.player.poll_finished() and self.play_queue:
+            if self.play_queue_index + 1 < len(self.play_queue):
+                self.play_queue_index += 1
+                self._start_playback(self.play_queue[self.play_queue_index])
+            elif self.recommend_mode:
+                self._load_more_recommend(play_after=True)
 
         position_ms = self.player.get_position_ms()
         total_ms = self.player.duration_ms
