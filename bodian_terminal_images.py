@@ -337,20 +337,9 @@ class NativeImageScreen(urwid_raw_display.Screen):
             del self.native_images[image_id]
         for image_id, image in images.items():
             previous = self.native_images.get(image_id)
-            if previous and previous["revision"] == image["revision"]:
-                if (
-                    previous["x"] == image["x"]
-                    and previous["y"] == image["y"]
-                    and previous["cols"] == image["cols"]
-                    and previous["rows"] == image["rows"]
-                ):
-                    continue
-                output.append(self._place_image(image))
-            else:
-                if previous:
-                    output.append(self._delete_image(image_id))
+            if not previous or previous["revision"] != image["revision"]:
                 output.append(self._transmit_image(image_id, image["widget"].get_native_image_payload(protocol="kitty")))
-                output.append(self._place_image(image))
+            output.append(self._place_image(image))
             self.native_images[image_id] = {
                 "revision": image["revision"],
                 "x": image["x"],
