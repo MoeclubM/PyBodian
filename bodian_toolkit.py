@@ -154,26 +154,129 @@ def save_local_config(config):
     _save_local_json(CONFIG_FILE, config)
 
 
-# ─── 终端 QR 码渲染（纯 Python，无第三方依赖）─────────────────────
+# ─── 终端 QR 码渲染 ─────────────────────────────────────────────────
+
+def _detect_terminal_image_protocol():
+    """检测终端是否支持 Kitty 或 Sixel 图片协议"""
+    forced = os.environ.get("BODIAN_IMAGE_PROTOCOL", "").strip().lower()
+    if forced in ("kitty", "sixel", "none"):
+        return forced
+    term = os.environ.get("TERM", "").lower()
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if os.environ.get("KITTY_WINDOW_ID") or "kitty" in term or term_program == "wezterm" or os.environ.get("WEZTERM_EXECUTABLE"):
+        return "kitty"
+    if os.environ.get("WT_SESSION") or "sixel" in term:
+        return "sixel"
+    return "none"
+
+
+def _make_qr_url(qr_code):
+    """构造原版 PC 客户端一致的移动端扫码登录链接"""
+    return (
+        "https://bodian-oia.kuwo.cn/bodian/download.html"
+        f"?pageName=login_pc&pt=3&id={urllib.parse.quote(str(qr_code), safe='')}"
+    )
+
+
+def _generate_qr_image(data_str, box_size=10, border=2):
+    """生成 QR 码 PIL Image 对象 (RGB)"""
+    import qrcode
+    qr = qrcode.QRCode(box_size=box_size, border=border, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(data_str)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white").get_image().convert("RGB")
+    return img
+
+
+def _generate_qr_png(data_str, box_size=10, border=2):
+    """生成 QR 码 PNG 二进制数据"""
+    from io import BytesIO
+    img = _generate_qr_image(data_str, box_size, border)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _render_qr_sixel(image):
+    """用 Sixel 协议在终端渲染 PIL 图片"""
+    try:
+        from textual_image._sixel import SixelOptions, image_to_sixels
+        if image.mode != "RGBA":
+            image = image.convert("RGBA")
+        return image_to_sixels(image, SixelOptions(colors=2, quantize="maxcoverage"))
+    except Exception:
+        return None
+
+
+def _render_qr_kitty(image):
+    """用 Kitty 协议在终端渲染 PIL 图片"""
+    import base64
+    from io import BytesIO
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGB")
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    chunk_size = 4096
+    chunks = [encoded[i:i + chunk_size] for i in range(0, len(encoded), chunk_size)]
+    parts = []
+    for idx, chunk in enumerate(chunks):
+        more = 1 if idx + 1 < len(chunks) else 0
+        if idx == 0:
+            params = f"a=t,t=d,f=100,q=2,m={more}"
+        else:
+            params = f"m={more},q=2"
+        parts.append(f"\x1b_G{params};{chunk}\x1b\\")
+    parts.append(f"\x1b_Ga=p,q=2\x1b\\")
+    return "".join(parts)
+
 
 def _print_qr_terminal(data_str):
-    """在终端渲染 QR 码，优先用 qrcode 库，否则用 webbrowser 打开在线图片"""
+    """在终端渲染 QR 码，优先用原生图片协议，其次用本地文件打开"""
+    protocol = _detect_terminal_image_protocol()
+
+    # 优先尝试用终端原生图片协议渲染
+    if protocol in ("sixel", "kitty"):
+        try:
+            image = _generate_qr_image(data_str)
+            if protocol == "sixel":
+                output = _render_qr_sixel(image)
+            else:
+                output = _render_qr_kitty(image)
+            if output:
+                print(output)
+                return
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+    # 尝试生成本地图片并用系统默认程序打开
     try:
-        import qrcode
-        qr = qrcode.QRCode(box_size=1, border=1)
-        qr.add_data(data_str)
-        qr.make(fit=True)
-        qr.print_ascii(invert=True)
+        image = _generate_qr_image(data_str)
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", prefix="bodian_qr_", delete=False)
+        image.save(tmp, format="PNG")
+        tmp_path = tmp.name
+        tmp.close()
+        print(f"\n  二维码已保存到: {tmp_path}")
+        try:
+            webbrowser.open(f"file:///{tmp_path.replace(os.sep, '/')}")
+            print("  已在浏览器中打开二维码图片")
+        except Exception:
+            print("  请手动打开上述文件查看二维码")
         return
     except ImportError:
         pass
+    except Exception:
+        pass
 
-    # 兜底：用浏览器打开在线二维码
+    # 最终兜底：使用在线 API
     qr_url = (
         "https://api.qrserver.com/v1/create-qr-code/"
         f"?size=300x300&data={urllib.parse.quote(data_str)}"
     )
-    print(f"\n  (终端 QR 需要: pip install qrcode)")
+    print(f"\n  (建议安装: pip install qrcode[pil])")
     print(f"  已在浏览器中打开二维码，或手动访问:")
     print(f"  {qr_url}")
     try:
@@ -543,28 +646,21 @@ class BoDianClient:
         })
         return data, resp
 
-    def users_login(self, uid=None, token=None):
-        login_uid = self.uid if uid is None else str(uid)
-        login_token = self.token if token is None else token
-        data, resp = self._request_ok("/api/ucenter/users/login", {
-            "uid": login_uid,
-            "token": login_token,
-            "timestamp": str(int(time.time() * 1000)),
-        })
-        if data:
-            self.uid = str(data.get("id", self.uid))
-            self.token = data.get("token", self.token)
-            user_info = data.get("userInfo", {})
-            pay_info = data.get("payInfo") or {}
-            self.nickname = user_info.get("nickname", self.nickname)
-            self.auth_type = user_info.get("authType", self.auth_type) or 0
-            self.user_is_vip = user_info.get("isVip", self.user_is_vip) or 0
-            self.vip_type = pay_info.get("vipType", user_info.get("vipType", self.vip_type)) or 0
-            self.pay_vip_type = pay_info.get("payVipType", user_info.get("payVipType", self.pay_vip_type)) or 0
-            self.act_vip_type = pay_info.get("actVipType", self.act_vip_type) or 0
-            self.pay_expire_date = pay_info.get("payExpireDate", pay_info.get("expireDate", self.pay_expire_date)) or 0
-            self.act_expire_date = pay_info.get("actExpireDate", self.act_expire_date) or 0
-            self.pay_is_vip_boolean = bool(pay_info.get("isVipBoolean", self.pay_is_vip_boolean))
+    def _apply_main_login_data(self, data):
+        self.uid = str(data.get("id") or data.get("uid") or data.get("userId") or self.uid)
+        self.token = data.get("token") or data.get("userToken") or self.token
+        user_info = data.get("userInfo", {})
+        pay_info = data.get("payInfo") or {}
+        self.nickname = user_info.get("nickname", self.nickname)
+        self.auth_type = user_info.get("authType", self.auth_type) or 0
+        self.user_is_vip = user_info.get("isVip", self.user_is_vip) or 0
+        self.vip_type = pay_info.get("vipType", user_info.get("vipType", self.vip_type)) or 0
+        self.pay_vip_type = pay_info.get("payVipType", user_info.get("payVipType", self.pay_vip_type)) or 0
+        self.act_vip_type = pay_info.get("actVipType", self.act_vip_type) or 0
+        self.pay_expire_date = pay_info.get("payExpireDate", pay_info.get("expireDate", self.pay_expire_date)) or 0
+        self.act_expire_date = pay_info.get("actExpireDate", self.act_expire_date) or 0
+        self.pay_is_vip_boolean = bool(pay_info.get("isVipBoolean", self.pay_is_vip_boolean))
+        if "qqMusicAuth" in data:
             qq_auth = data.get("qqMusicAuth") or {}
             new_open_id = str(qq_auth.get("openId", "") or "")
             new_open_token = qq_auth.get("openToken", "") or ""
@@ -579,9 +675,43 @@ class BoDianClient:
             self.qq_nickname = qq_auth.get("nickname", "") or ""
             self.qq_head_img = qq_auth.get("headImg", "") or ""
             self.qq_import_status = qq_auth.get("importStatus", 0) or 0
-            self.logged_in = self.uid != "-1" and bool(self.token)
-            self._save_credentials()
+        self.logged_in = self.uid != "-1" and bool(self.token)
+        self._save_credentials()
+
+    def users_login(self, uid=None, token=None):
+        login_uid = self.uid if uid is None else str(uid)
+        login_token = self.token if token is None else token
+        data, resp = self._request_ok("/api/ucenter/users/login", {
+            "uid": login_uid,
+            "token": login_token,
+            "timestamp": str(int(time.time() * 1000)),
+        })
+        if data:
+            self._apply_main_login_data(data)
         return data, resp
+
+    def login_by_qr_code(self, qr_code):
+        data, resp = self._request_json_ok("/api/ucenter/users/login", {
+            "uid": "-1",
+            "token": "",
+            "timestamp": str(int(time.time() * 1000)),
+        }, {
+            "authType": 10,
+            "qrCode": qr_code,
+        })
+        if data:
+            self._apply_main_login_data(data)
+        return data, resp
+
+    def login_from_qr_status(self, qr_code, status_data):
+        login_uid = status_data.get("uid") or status_data.get("userId") or status_data.get("id")
+        login_token = status_data.get("token") or status_data.get("userToken")
+        if login_uid and login_token:
+            self._apply_main_login_data(status_data)
+            return status_data, {"code": 200, "msg": "success", "data": status_data}
+        if status_data.get("status") == 3:
+            return self.login_by_qr_code(qr_code)
+        return None, {"code": -1, "msg": f"二维码确认响应未返回登录凭证: {status_data}"}
 
     def login_qq_music(self):
         if not self.qq_open_id or not self.qq_open_token:

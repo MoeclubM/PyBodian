@@ -17,6 +17,7 @@ from bodian_toolkit import (
     BoDianClient,
     _detect_ext,
     _fmt_dur,
+    _make_qr_url,
     _print_qr_terminal,
     _sanitize,
 )
@@ -256,9 +257,11 @@ def cmd_login(args, client):
         print(f"  获取二维码失败: {qr_resp}")
         return
 
+    qr_url = _make_qr_url(qr_code)
     print("  请使用波点移动端扫描下方二维码完成登录：")
     print(f"  二维码载荷: {qr_code}")
-    _print_qr_terminal(qr_code)
+    print(f"  二维码连接: {qr_url}")
+    _print_qr_terminal(qr_url)
 
     deadline = time.time() + max(args.wait, 1)
     last_status = None
@@ -274,17 +277,25 @@ def cmd_login(args, client):
                 print(f"  当前状态: {status}")
             last_status = status
         if status == 3:
-            login_data, login_resp = client.users_login(uid="-1", token="")
-            if login_data and client.logged_in:
+            login_resp = None
+            while time.time() < deadline:
+                login_data, login_resp = client.login_from_qr_status(qr_code, status_data)
+                if login_data and client.logged_in:
+                    print(f"  登录成功: {client.nickname or client.uid} (UID={client.uid})")
+                    _print_auth_summary(client)
+                    print(f"  认证信息已保存到: {AUTH_FILE}")
+                    return
+                time.sleep(0.8)
+            if client.logged_in and client.uid != "-1":
                 print(f"  登录成功: {client.nickname or client.uid} (UID={client.uid})")
                 _print_auth_summary(client)
                 print(f"  认证信息已保存到: {AUTH_FILE}")
-            else:
-                client.uid = old_uid
-                client.token = old_token
-                client.nickname = old_nickname
-                client.logged_in = old_logged_in
-                print(f"  换取凭证失败: {login_resp}")
+                return
+            client.uid = old_uid
+            client.token = old_token
+            client.nickname = old_nickname
+            client.logged_in = old_logged_in
+            print(f"  换取凭证失败: {login_resp}")
             return
         if status not in (None, 1):
             client.uid = old_uid
