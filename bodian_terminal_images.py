@@ -284,6 +284,7 @@ class NativeImageScreen(urwid_raw_display.Screen):
         super().__init__(*args, **kwargs)
         self.image_protocol = detect_native_image_protocol() if image_protocol is None else image_protocol
         self.native_images = {}
+        self.last_screen_size = None
         self.cell_width_px, self.cell_height_px = _get_cell_pixel_size()
         _set_cell_pixel_size(self.cell_width_px, self.cell_height_px)
 
@@ -293,6 +294,12 @@ class NativeImageScreen(urwid_raw_display.Screen):
             self._refresh_terminal_cell_size()
 
     def draw_screen(self, size, canvas):
+        if self.last_screen_size is not None and self.last_screen_size != size:
+            self.native_images.clear()
+            if self.image_protocol == "sixel":
+                self._refresh_terminal_cell_size()
+            self.write("\x1b[2J\x1b[H")
+        self.last_screen_size = size
         super().draw_screen(size, canvas)
         output = self._sync_native_images(self._collect_native_images(canvas))
         if output:
