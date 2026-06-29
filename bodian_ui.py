@@ -680,6 +680,9 @@ class BoDianUI:
             text=text,
             lines=list(self.current_lyric_lines),
             active_index=self.active_lyric_index,
+            position_ms=self.player.get_position_ms(),
+            duration_ms=self.player.duration_ms,
+            playback_state=self.player.state,
         )
 
     def _toggle_lyric_overlay(self, *_args):
@@ -2280,6 +2283,7 @@ class BoDianUI:
         self.progress_bar.set_state(position_ms, total_ms)
         self._refresh_song_row_labels()
         self._update_lyric_highlight(position_ms)
+        self._push_lyric_overlay()
         loop.set_alarm_in(0.4, self._tick)
 
     def _update_lyric_highlight(self, position_ms):
