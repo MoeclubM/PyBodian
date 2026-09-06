@@ -36,3 +36,13 @@ Thumbs.db
 启动.bat
 启动.ps1
 一键启动GUI.bat
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+PyBodian.exe
+
+# start-up bats (local)
+启动完整版.bat
+启动桌面歌词.bat

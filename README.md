@@ -1,11 +1,13 @@
 # Bodian
 
-基于 Python 的第三方波点音乐客户端，提供终端界面（TUI）和命令行（CLI）两种使用方式。
+基于 Python 的第三方波点音乐客户端，提供窗口界面（GUI）、终端界面（TUI）和命令行（CLI）三种使用方式。
 
 ## 项目特色
 
+- 窗口界面：搜索、推荐、收藏、歌单、艺人、专辑浏览，播放控制、音质切换、下载、收藏一步到位。
+- 仅歌词模式：配合波点官方客户端使用，自动跟随客户端正在播放的歌曲展示桌面歌词。
+- 歌词浮窗：Windows 原生逐像素透明（UpdateLayeredWindow），文字边缘平滑带柔和阴影；持续置顶、锁定后鼠标悬停才显示控件；字号、颜色、上下行距、不透明度均可调。
 - 终端界面：支持搜索、推荐、收藏、歌单、艺人、专辑、播放页、歌词页和封面显示。
-- 歌词浮窗：支持独立桌面歌词窗口，可置顶、锁定位置、拖动和换色。
 - 命令行操作：支持登录、搜索、元数据查询、歌词保存、单曲下载、艺人专辑批量下载和 JSON 输出。
 - 登录方式：支持二维码登录、从已安装的波点 PC 客户端提取登录信息，也支持手动填写 UID 与 Token。
 - 播放控制：使用本机 `ffplay` 播放，支持暂停、继续、上一首、下一首、停止、重播和进度定位。
@@ -15,19 +17,40 @@
 
 ## 运行环境
 
-- Python 3.10 或更高版本。
-- FFmpeg：播放需要 `ffplay`，写入封面需要 `ffmpeg`。
-- Python 依赖：`urwid`、`Pillow`、`textual-image`；二维码终端显示可选安装 `qrcode`。
-
-安装依赖：
+- Python 3.10 或更高版本（推荐 `py -3.11`）。
+- FFmpeg：完整模式播放需要 `ffplay`，写入封面需要 `ffmpeg`（仅歌词模式无需 FFmpeg）。
+- Python 依赖：GUI 需要 `Pillow`；TUI 另需 `urwid`、`textual-image`；二维码终端显示可选安装 `qrcode`。
 
 ```bash
-pip install urwid pillow textual-image qrcode
+pip install pillow urwid textual-image qrcode
 ```
 
 请确保 `ffmpeg` 和 `ffplay` 已加入系统 `PATH`。
 
 ## 快速用法
+
+### 0. 双击启动（推荐）
+
+| 脚本 | 用途 |
+| --- | --- |
+| `启动桌面歌词.bat` | 仅歌词模式：跟随波点官方客户端显示桌面歌词 |
+| `启动完整版.bat` | 完整模式：窗口界面播放、搜索、下载 |
+| `打包exe.bat` | 用 PyInstaller 打包成独立的 `PyBodian.exe` |
+
+打包完成后项目根目录会生成 `PyBodian.exe`（单文件、免 Python 环境）：
+
+- `PyBodian.exe` → 完整模式
+- `PyBodian.exe --lyrics-only` → 仅歌词模式
+
+自定义图标：把一个 256x256 以上的 `.ico` 文件放到项目根目录并命名为 `icon.ico`（或放在 `assets/icon.ico`），重新执行 `打包exe.bat` 即可，exe 与程序窗口都会使用该图标。
+
+### 仅歌词模式
+
+打开波点官方客户端听歌，本工具会每 2 秒读取客户端的播放记录：
+
+- 检测到新歌自动加载并展示对应歌词，进度按播放起始时间推算；
+- 关闭"自动跟随"后，可用"手动指定"搜索任意歌曲展示其歌词；
+- 浮窗支持拖动、锁定（锁定后鼠标悬停在歌词上才显示解锁按钮）、换色、字号（浮窗上滚轮或 A＋/A－）、自定义颜色与行距（浮窗设置）。
 
 ### 1. 登录
 
@@ -55,7 +78,15 @@ python bodian_cli.py login --uid UID --token TOKEN
 python bodian_cli.py auth
 ```
 
-### 2. 启动终端界面
+### 2. 启动窗口界面
+
+```bash
+python bodian_gui.py
+```
+
+双击歌曲播放，右键歌曲可播放/下载/收藏/保存歌词/查看歌手专辑；播放栏可切换播放与下载音质、调节音量、打开放大后的歌词面板与浮窗设置。
+
+### 3. 启动终端界面
 
 ```bash
 python bodian_ui.py
@@ -81,7 +112,7 @@ python bodian_ui.py
 | `Esc` | 返回 |
 | `q` | 退出 |
 
-### 3. 使用命令行
+### 4. 使用命令行
 
 ```bash
 python bodian_cli.py search 周杰伦 -l 10

@@ -136,6 +136,7 @@ def load_local_config():
         "lyric_overlay_font_scale": 1.0,
         "lyric_overlay_primary_color": "",
         "lyric_overlay_line_gap": 0,
+        "follow_client_enabled": True,
     })
     if config.get("lyric_overlay_geometry") in ("460x220+120+120", "720x280+120+120"):
         config["lyric_overlay_geometry"] = ""

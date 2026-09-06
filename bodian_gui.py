@@ -59,13 +59,21 @@ CATEGORY_DEFS = [
 
 class BoDianGUI:
 
-    def __init__(self):
+    def __init__(self, lyrics_only=False):
+        self.lyrics_only = lyrics_only
         self.client = BoDianClient()
         self.player = BoDianPlayer()
         self.queue = queue.Queue()
         self.playback_request_id = 0
         self.shutting_down = False
         self.download_dir = self.client.get_local_config("download_dir", os.getcwd())
+
+        self.follow_client_enabled = bool(self.client.get_local_config("follow_client_enabled", True))
+        self.follow_checking = False
+        self.last_follow_song_id = None
+        self.follow_started_at = 0.0
+        self.next_follow_poll_at = 0.0
+        self.manual_started_at = 0.0
 
         self.current_songs = []
         self.play_queue = []
@@ -106,22 +114,51 @@ class BoDianGUI:
 
         self._build_root()
         self._build_style()
-        self._build_ui()
+        if lyrics_only:
+            self._build_lyrics_ui()
+        else:
+            self._build_ui()
 
         self._update_login_label()
-        self._load_category("recommend")
+        if lyrics_only:
+            self._set_status("等待波点客户端播放…" if self.follow_client_enabled else "已就绪")
+        else:
+            self._load_category("recommend")
         if self.lyric_overlay_enabled:
             self._ensure_lyric_overlay()
         self.root.after(300, self._tick)
 
     # ── 界面搭建 ──────────────────────────────────────────────────
 
+    def _apply_window_icon(self, window=None):
+        target = window or self.root
+        if getattr(sys, "frozen", False):
+            bases = [os.path.dirname(os.path.abspath(sys.executable))]
+        else:
+            bases = [os.path.dirname(os.path.abspath(__file__))]
+        for base in bases:
+            for icon_name in ("icon.ico", os.path.join("assets", "icon.ico")):
+                icon_path = os.path.join(base, icon_name)
+                if not os.path.isfile(icon_path):
+                    continue
+                try:
+                    target.iconbitmap(icon_path)
+                except Exception:
+                    continue
+                return True
+        return False
+
     def _build_root(self):
         self.root = tk.Tk()
-        self.root.title("波点音乐 PyBodian")
-        self.root.geometry("1180x740")
-        self.root.minsize(960, 620)
+        self.root.title("波点桌面歌词" if self.lyrics_only else "波点音乐 PyBodian")
+        if self.lyrics_only:
+            self.root.geometry("520x300")
+            self.root.resizable(False, True)
+        else:
+            self.root.geometry("1180x740")
+            self.root.minsize(960, 620)
         self.root.configure(bg=APP_BG)
+        self._apply_window_icon()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_style(self):
@@ -356,6 +393,88 @@ class BoDianGUI:
         self.status_label = tk.Label(self.root, text="就绪", bg=APP_BG, fg=APP_MUTED,
                                      font=FONT_SMALL, anchor="w")
         self.status_label.pack(fill="x", padx=12, pady=(0, 6))
+
+    def _build_lyrics_ui(self):
+        """仅歌词模式：配合波点官方客户端，只负责桌面歌词展示。"""
+        outer = tk.Frame(self.root, bg=APP_BG)
+        outer.pack(fill="both", expand=True, padx=12, pady=10)
+
+        self.login_label = tk.Label(outer, text="未登录", bg=APP_BG, fg=APP_WARN, font=FONT_SMALL, anchor="w")
+        self.login_label.pack(fill="x")
+        login_row = tk.Frame(outer, bg=APP_BG)
+        login_row.pack(fill="x", pady=(4, 8))
+        self._make_button(login_row, "提取凭证", self._on_extract).pack(side="left")
+        self._make_button(login_row, "扫码登录", self._on_qr_login).pack(side="left", padx=(6, 0))
+        self._make_button(login_row, "登出", self._on_logout).pack(side="left", padx=(6, 0))
+
+        follow_row = tk.Frame(outer, bg=APP_BG)
+        follow_row.pack(fill="x", pady=(0, 6))
+        self.follow_var = tk.BooleanVar(value=self.follow_client_enabled)
+        follow_check = tk.Checkbutton(
+            follow_row,
+            text="自动跟随波点客户端播放",
+            variable=self.follow_var,
+            command=self._toggle_follow_client,
+            bg=APP_BG,
+            fg=APP_FG,
+            activebackground=APP_BG,
+            activeforeground=APP_ACCENT,
+            selectcolor=APP_PANEL_ALT,
+            font=FONT_MAIN,
+            bd=0,
+            highlightthickness=0,
+        )
+        follow_check.pack(side="left")
+
+        self.now_following_label = tk.Label(outer, text="当前：-", bg=APP_BG, fg=APP_ACCENT,
+                                            font=FONT_TITLE, anchor="w")
+        self.now_following_label.pack(fill="x", pady=(2, 6))
+
+        search_row = tk.Frame(outer, bg=APP_BG)
+        search_row.pack(fill="x", pady=(0, 6))
+        tk.Label(search_row, text="手动指定:", bg=APP_BG, fg=APP_MUTED, font=FONT_SMALL).pack(side="left")
+        self.lyrics_search_var = tk.StringVar()
+        search_entry = tk.Entry(
+            search_row,
+            textvariable=self.lyrics_search_var,
+            bg=APP_PANEL,
+            fg=APP_FG,
+            insertbackground=APP_FG,
+            relief="flat",
+            font=FONT_MAIN,
+        )
+        search_entry.pack(side="left", fill="x", expand=True, padx=6, ipady=3)
+        search_entry.bind("<Return>", lambda _event: self._on_lyrics_search())
+        self._make_button(search_row, "搜索", self._on_lyrics_search, accent=True).pack(side="left")
+
+        overlay_row = tk.Frame(outer, bg=APP_BG)
+        overlay_row.pack(fill="x", pady=(4, 0))
+        self.overlay_var = tk.BooleanVar(value=self.lyric_overlay_enabled)
+        overlay_check = tk.Checkbutton(
+            overlay_row,
+            text="歌词浮窗",
+            variable=self.overlay_var,
+            command=self._toggle_lyric_overlay,
+            bg=APP_BG,
+            fg=APP_FG,
+            activebackground=APP_BG,
+            activeforeground=APP_ACCENT,
+            selectcolor=APP_PANEL_ALT,
+            font=FONT_SMALL,
+            bd=0,
+            highlightthickness=0,
+        )
+        overlay_check.pack(side="left")
+        for text, command in (
+            ("置顶", self._toggle_lyric_overlay_topmost),
+            ("锁定", self._toggle_lyric_overlay_lock),
+            ("浮窗设置", self._open_overlay_settings),
+        ):
+            self._make_button(overlay_row, text, command).pack(side="left", padx=(6, 0))
+
+        self.status_label = tk.Label(outer, text="就绪", bg=APP_BG, fg=APP_MUTED,
+                                     font=FONT_SMALL, anchor="w")
+        self.status_label.pack(fill="x", side="bottom", pady=(10, 0))
 
     # ── 通用工具 ──────────────────────────────────────────────────
 
@@ -754,6 +873,8 @@ class BoDianGUI:
         self._push_lyric_overlay(force=True)
 
     def _render_lyric_panel(self, plain_lines, active_index):
+        if self.lyrics_only or not getattr(self, "lyric_text", None):
+            return
         self.lyric_text.configure(state="normal")
         self.lyric_text.delete("1.0", "end")
         if plain_lines:
@@ -789,6 +910,8 @@ class BoDianGUI:
     # ── 封面 ─────────────────────────────────────────────────────
 
     def _reset_cover(self):
+        if self.lyrics_only or not getattr(self, "cover_label", None):
+            return
         self.cover_label.configure(text="♪", image="", width=7, height=3)
         self._cover_photo = None
 
@@ -1291,8 +1414,13 @@ class BoDianGUI:
         self.client.logout(quiet=True)
         self.current_song = None
         self.current_playback_quality_key = None
+        self.last_follow_song_id = None
+        self.follow_started_at = 0.0
         self._reset_cover()
-        self.now_playing_label.configure(text="未播放")
+        if not self.lyrics_only:
+            self.now_playing_label.configure(text="未播放")
+        else:
+            self.now_following_label.configure(text="当前：-")
         self._show_lyric_text("开始播放后加载歌词")
         self._update_login_label()
         self._set_status("已登出")
@@ -1592,6 +1720,17 @@ class BoDianGUI:
 
     # ── 主循环 ───────────────────────────────────────────────────
 
+    def _overlay_position_state(self):
+        """歌词进度来源：完整模式取本机播放器，仅歌词模式按时间推算。"""
+        if self.lyrics_only:
+            if self.current_song and self.follow_started_at:
+                elapsed_ms = int((time.time() - self.follow_started_at) * 1000)
+                duration_ms = int(float(self.current_song.get("duration") or 0)) * 1000
+                state = "playing" if elapsed_ms <= duration_ms + 1500 else "stopped"
+                return max(0, elapsed_ms), duration_ms, state
+            return 0, 0, "stopped"
+        return self.player.get_position_ms(), self.player.duration_ms, self.player.state
+
     def _tick(self):
         if self.shutting_down:
             return
@@ -1607,26 +1746,31 @@ class BoDianGUI:
 
         self._poll_qr_login()
 
-        if self.player.poll_finished() and self.player.just_finished:
-            self.player.just_finished = False
-            if self.play_queue and self.play_queue_index + 1 < len(self.play_queue):
-                self.play_queue_index += 1
-                self._start_playback(self.play_queue[self.play_queue_index])
-            elif self.current_song:
-                self._set_status(f"播放结束: {self.current_song['name']}")
+        if self.lyrics_only:
+            self._poll_follow_client()
+            position_ms, _duration_ms, _state = self._overlay_position_state()
+        else:
+            if self.player.poll_finished() and self.player.just_finished:
+                self.player.just_finished = False
+                if self.play_queue and self.play_queue_index + 1 < len(self.play_queue):
+                    self.play_queue_index += 1
+                    self._start_playback(self.play_queue[self.play_queue_index])
+                elif self.current_song:
+                    self._set_status(f"播放结束: {self.current_song['name']}")
 
-        position_ms = self.player.get_position_ms()
-        total_ms = self.player.duration_ms
-        if total_ms > 0:
-            self.duration_label.configure(text=_fmt_dur(total_ms // 1000))
+            position_ms = self.player.get_position_ms()
+            total_ms = self.player.duration_ms
+            if total_ms > 0:
+                self.duration_label.configure(text=_fmt_dur(total_ms // 1000))
+                if not self.seek_dragging:
+                    try:
+                        self.seek_scale.configure(to=total_ms)
+                        self.seek_var.set(min(position_ms, total_ms))
+                    except tk.TclError:
+                        pass
             if not self.seek_dragging:
-                try:
-                    self.seek_scale.configure(to=total_ms)
-                    self.seek_var.set(min(position_ms, total_ms))
-                except tk.TclError:
-                    pass
-        if not self.seek_dragging:
-            self.position_label.configure(text=_fmt_dur(position_ms // 1000))
+                self.position_label.configure(text=_fmt_dur(position_ms // 1000))
+
         self._update_lyric_highlight(position_ms)
         self._push_lyric_overlay()
         self.root.after(300, self._tick)
@@ -1645,10 +1789,156 @@ class BoDianGUI:
         except tk.TclError:
             pass
 
+    # ── 仅歌词模式：跟随波点客户端 ────────────────────────────────
+
+    def _toggle_follow_client(self):
+        self.follow_client_enabled = bool(self.follow_var.get())
+        self.client.set_local_config(follow_client_enabled=self.follow_client_enabled)
+        if self.follow_client_enabled:
+            self._set_status("已开启跟随：等待波点客户端播放…")
+        else:
+            self._set_status("已关闭跟随")
+
+    def _poll_follow_client(self):
+        if not self.follow_client_enabled or self.follow_checking:
+            return
+        now = time.monotonic()
+        if now < self.next_follow_poll_at:
+            return
+        self.next_follow_poll_at = now + 2.0
+        self.follow_checking = True
+
+        def worker():
+            items = self.client.get_history_db_snapshot(limit=1)
+            if not items:
+                return None
+            entry = items[0]
+            return entry
+
+        def done(entry, error):
+            self.follow_checking = False
+            if error or not entry:
+                return
+            song_id = entry.get("id")
+            if song_id is None or str(song_id) == str(self.last_follow_song_id):
+                return
+            data = entry.get("data") or {}
+            name = data.get("name")
+            if not name:
+                return
+            self.last_follow_song_id = song_id
+            self._start_follow_song(entry)
+
+        threading.Thread(target=lambda: done(*_safe_call(worker)), daemon=True).start()
+
+    def _start_follow_song(self, entry):
+        def apply():
+            data = entry.get("data") or {}
+            song = self.client.normalize_song(data)
+            self.current_song = song
+            self.current_playback_quality_key = None
+            started_at = _parse_db_time(entry.get("time"))
+            self.follow_started_at = started_at or time.time()
+            self.manual_started_at = self.follow_started_at
+            title = f"{song.get('artist', '-')} - {song.get('name', '?')}"
+            self.now_following_label.configure(text=f"当前：{title}")
+            self._show_lyric_text("正在加载歌词")
+            self._load_lyric(song)
+            self._set_status(f"已跟随客户端播放: {title}")
+
+        if threading.current_thread() is threading.main_thread():
+            apply()
+        else:
+            self.queue.put(apply)
+
+    def _on_lyrics_search(self):
+        keyword = self.lyrics_search_var.get().strip()
+        if not keyword:
+            self._set_status("请输入要搜索的歌曲", warn=True)
+            return
+
+        def worker():
+            return self.client.search(keyword, page=0, page_size=20)
+
+        def done(result, error):
+            if error:
+                self._set_status(f"搜索失败: {error}", warn=True)
+                return
+            songs = result or []
+            if not songs:
+                self._set_status("无搜索结果", warn=True)
+                return
+            self._show_lyrics_pick_dialog(keyword, songs)
+
+        self._async(f"正在搜索: {keyword}", worker, done)
+
+    def _show_lyrics_pick_dialog(self, keyword, songs):
+        win = tk.Toplevel(self.root)
+        win.title(f"选择歌曲: {keyword}")
+        win.configure(bg=APP_BG)
+        win.transient(self.root)
+        win.geometry("560x360")
+        listbox = tk.Listbox(
+            win,
+            bg=APP_PANEL,
+            fg=APP_FG,
+            selectbackground=APP_SELECT,
+            selectforeground=APP_ACCENT,
+            relief="flat",
+            font=FONT_MAIN,
+            activestyle="none",
+        )
+        for song in songs:
+            listbox.insert("end", f"{song.get('artist', '-')} - {song.get('name', '?')}  [{_fmt_dur(song.get('duration') or 0)}]")
+        listbox.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+
+        def pick(_event=None):
+            selection = listbox.curselection()
+            if not selection:
+                return
+            song = songs[selection[0]]
+            win.destroy()
+            self.current_song = song
+            self.follow_started_at = time.time()
+            self.manual_started_at = self.follow_started_at
+            self.now_following_label.configure(text=f"当前：{song.get('artist', '-')} - {song.get('name', '?')}")
+            self._show_lyric_text("正在加载歌词")
+            self._load_lyric(song)
+            self._set_status(f"展示歌词: {song.get('artist', '-')} - {song.get('name', '?')}")
+
+        listbox.bind("<Double-1>", pick)
+        listbox.bind("<Return>", pick)
+        listbox.focus_set()
+
+
+def _parse_db_time(value):
+    """把播放历史里的时间字符串解析为本地 epoch 秒，失败返回 0。"""
+    if not value:
+        return 0.0
+    try:
+        from datetime import datetime
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip()
+        try:
+            return datetime.fromisoformat(text).timestamp()
+        except ValueError:
+            return time.mktime(time.strptime(text[:19], "%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return 0.0
+
+
+def _safe_call(func):
+    try:
+        return func(), None
+    except Exception as exc:
+        return None, str(exc)
+
 
 def main():
+    lyrics_only = "--lyrics-only" in sys.argv or "--lyric" in sys.argv
     _enable_dpi_awareness()
-    app = BoDianGUI()
+    app = BoDianGUI(lyrics_only=lyrics_only)
     app.root.mainloop()
 
 

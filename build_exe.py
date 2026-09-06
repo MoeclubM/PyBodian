@@ -22,6 +22,20 @@ def main():
     if shutil.which("ffplay") is None:
         print("提示: 当前 PATH 未找到 ffplay，打包后的 exe 播放音乐仍需要系统安装 FFmpeg。")
 
+    icon_path = ""
+    for candidate in (
+        os.path.join(ROOT, "icon.ico"),
+        os.path.join(ROOT, "assets", "icon.ico"),
+    ):
+        if os.path.isfile(candidate):
+            icon_path = candidate
+            break
+    if icon_path:
+        print(f"使用应用图标: {icon_path}")
+    else:
+        print("提示: 未找到 icon.ico（或 assets/icon.ico），exe 将使用 PyInstaller 默认图标。")
+        print("      想自定义图标时，把 256x256 以上的 .ico 文件放到项目根目录命名 icon.ico 后重新打包即可。")
+
     args = [
         python, "-m", "PyInstaller",
         "--noconfirm",
@@ -32,8 +46,10 @@ def main():
         "--hidden-import", "extract_credentials",
         "--hidden-import", "qrcode",
         "--hidden-import", "PIL._tkinter_finder",
-        os.path.join(ROOT, "bodian_gui.py"),
     ]
+    if icon_path:
+        args.extend(["--icon", icon_path])
+    args.append(os.path.join(ROOT, "bodian_gui.py"))
     print("开始打包（首次构建需要几分钟）...")
     subprocess.run(args, cwd=ROOT, check=True)
 

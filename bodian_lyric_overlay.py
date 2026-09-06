@@ -1002,8 +1002,8 @@ class _TkLyricOverlay:
         progress = _clamp(state.get("progress", 0.0), 0.0, 1.0)
 
         font_scale = self._font_scale()
-        primary_font_size = int(round(_clamp(width * 0.030 * font_scale, 12, 64)))
-        secondary_font_size = int(round(_clamp(width * 0.021 * font_scale, 9, 46)))
+        primary_font_size = int(round(_clamp(width * 0.030 * font_scale, 12, 96)))
+        secondary_font_size = int(round(_clamp(width * 0.021 * font_scale, 9, 64)))
 
         primary_font = self._font_for_path(LYRIC_FONT_MAIN[0], primary_font_size, bold=True)
         secondary_font = self._font_for_path(LYRIC_FONT_SUB[0], secondary_font_size, bold=False)
