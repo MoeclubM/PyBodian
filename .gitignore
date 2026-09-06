@@ -32,10 +32,11 @@ overlay_*.png
 .DS_Store
 Thumbs.db
 
-# start-up bat
-启动.bat
+# start-up bats (local)
 启动.ps1
-一键启动GUI.bat
+启动菜单.bat
+启动完整版.bat
+启动桌面歌词.bat
 
 # PyInstaller build output
 build/
@@ -43,6 +44,5 @@ dist/
 *.spec
 PyBodian.exe
 
-# start-up bats (local)
-启动完整版.bat
-启动桌面歌词.bat
+# local test scripts
+tests/

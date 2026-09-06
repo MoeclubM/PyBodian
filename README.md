@@ -35,6 +35,7 @@ pip install pillow urwid textual-image qrcode
 | --- | --- |
 | `启动桌面歌词.bat` | 仅歌词模式：跟随波点官方客户端显示桌面歌词 |
 | `启动完整版.bat` | 完整模式：窗口界面播放、搜索、下载 |
+| `启动菜单.bat` | 交互菜单：提取凭证、扫码登录、启动两种模式 |
 | `打包exe.bat` | 用 PyInstaller 打包成独立的 `PyBodian.exe` |
 
 打包完成后项目根目录会生成 `PyBodian.exe`（单文件、免 Python 环境）：
@@ -42,7 +43,7 @@ pip install pillow urwid textual-image qrcode
 - `PyBodian.exe` → 完整模式
 - `PyBodian.exe --lyrics-only` → 仅歌词模式
 
-自定义图标：把一个 256x256 以上的 `.ico` 文件放到项目根目录并命名为 `icon.ico`（或放在 `assets/icon.ico`），重新执行 `打包exe.bat` 即可，exe 与程序窗口都会使用该图标。
+自定义图标：仓库根目录的 `icon.ico` 同时用作 exe 图标和程序窗口图标；想换成自己的图标，用 256x256 以上的 `.ico` 文件替换它（或放到 `assets/icon.ico`），重新执行 `打包exe.bat` 即可。
 
 ### 仅歌词模式
 

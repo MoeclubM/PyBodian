@@ -59,8 +59,12 @@ def main():
         raise SystemExit(f"打包失败: 未找到 {dist_exe}")
 
     target = os.path.join(ROOT, exe_name)
-    shutil.copy2(dist_exe, target)
-    print(f"\n打包完成: {target}")
+    try:
+        shutil.copy2(dist_exe, target)
+        print(f"\n打包完成: {target}")
+    except PermissionError:
+        print(f"\n根目录 {exe_name} 正在运行，无法覆盖。")
+        print(f"已生成 {dist_exe}，关闭正在运行的 PyBodian 后重新执行本脚本即可更新根目录副本。")
     print("说明: exe 与源码目录共用旁边的 .bodian 配置目录（便携模式），"
           "首次运行如未登录，请先在界面右上角“提取凭证”或扫码登录。")
 

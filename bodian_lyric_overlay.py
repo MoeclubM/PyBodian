@@ -1064,19 +1064,23 @@ class _TkLyricOverlay:
         if self._compose_cached_key == key and self._compose_cache_image is not None:
             return self._compose_cache_image, False
 
-        image = Image.new("RGBA", (max(1, int(width)), max(1, int(height))), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        layout = self._build_layout(draw, state, width, height)
-        if not layout:
-            return None, False
-
-        window_h = max(height, layout["content_h"])
-        if window_h != height:
-            image = Image.new("RGBA", (max(1, int(width)), max(1, int(window_h))), (0, 0, 0, 0))
+        min_h = self._min_size()[1]
+        target_h = max(min_h, int(height))
+        image = None
+        draw = None
+        layout = None
+        # 让窗口高度贴合内容：内容更矮时按内容高度重排（窗口可收缩），
+        # 更高时按内容高度重排（窗口可长高）。pad 依赖高度，最多迭代 3 次收敛。
+        for _ in range(3):
+            image = Image.new("RGBA", (max(1, int(width)), target_h), (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
-            layout = self._build_layout(draw, state, width, window_h)
+            layout = self._build_layout(draw, state, width, target_h)
             if not layout:
                 return None, False
+            content_h = max(min_h, int(layout["content_h"]))
+            if content_h == target_h:
+                break
+            target_h = content_h
 
         progress = layout["progress"]
         if layout["primary"]:
@@ -1399,12 +1403,15 @@ class _TkLyricOverlay:
         if image is None:
             return
         if self._layered_ok and image.size[1] != height and abs(image.size[1] - height) > 8:
-            # 字号/行距变化导致内容高度变化时，让窗口高度自适应
+            # 字号/行距变化导致内容高度变化时，让窗口高度双向自适应
             now = time.monotonic()
             if now - self._last_content_resize_at > 0.5:
                 self._last_content_resize_at = now
+                new_h = max(self._min_size()[1], image.size[1])
                 try:
-                    root.geometry(f"{width}x{image.size[1]}+{root.winfo_x()}+{root.winfo_y()}")
+                    screen_h = root.winfo_screenheight()
+                    new_h = min(new_h, max(self._min_size()[1], screen_h - 80))
+                    root.geometry(f"{width}x{new_h}+{root.winfo_x()}+{root.winfo_y()}")
                     self._force_present = True
                     if self._hwnd and self._layered is not None:
                         self._layered.set_topmost(self._hwnd, True)

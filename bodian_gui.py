@@ -91,6 +91,8 @@ class BoDianGUI:
         self.category_loaded = set()
         self.seek_dragging = False
         self.volume_var = None
+        self._overlay_slider_active = False
+        self._overlay_slider_syncing = False
 
         saved_quality_key = self.client.get_local_config("quality", "6")
         self.playback_quality_key = self.client.get_local_config("playback_quality", saved_quality_key)
@@ -1564,6 +1566,12 @@ class BoDianGUI:
             self.lyric_overlay.next_theme()
         self._set_status(f"歌词浮窗颜色: {THEMES[self.lyric_overlay_theme]['name']}")
 
+    def _mark_slider_active(self, active):
+        self._overlay_slider_active = bool(active)
+
+    def _slider_sync_done(self):
+        self._overlay_slider_syncing = False
+
     def _open_overlay_settings(self):
         if getattr(self, "_overlay_settings_win", None) is not None:
             try:
@@ -1609,6 +1617,8 @@ class BoDianGUI:
         font_scale_var = tk.DoubleVar(value=self.lyric_overlay_font_scale)
 
         def on_font(value):
+            if self._overlay_slider_syncing:
+                return
             scale = max(0.6, min(2.0, float(value)))
             self.lyric_overlay_font_scale = round(scale, 2)
             font_value.configure(text=f"{int(scale * 100)}%")
@@ -1618,6 +1628,8 @@ class BoDianGUI:
 
         font_slider = ttk.Scale(font_row, orient="horizontal", from_=60, to=200, variable=font_scale_var, command=on_font)
         font_slider.pack(side="left", fill="x", expand=True, padx=6)
+        font_slider.bind("<ButtonPress-1>", lambda _e: self._mark_slider_active(True))
+        font_slider.bind("<ButtonRelease-1>", lambda _e: self._mark_slider_active(False))
         slider_specs.append((font_scale_var, self.lyric_overlay_font_scale))
 
         gap_row = tk.Frame(win, bg=APP_BG)
@@ -1629,6 +1641,8 @@ class BoDianGUI:
         gap_var = tk.DoubleVar(value=self.lyric_overlay_line_gap)
 
         def on_gap(value):
+            if self._overlay_slider_syncing:
+                return
             gap = int(float(value))
             self.lyric_overlay_line_gap = gap
             gap_value.configure(text="自动" if gap == 0 else f"{gap}px")
@@ -1638,6 +1652,8 @@ class BoDianGUI:
 
         gap_slider = ttk.Scale(gap_row, orient="horizontal", from_=0, to=60, variable=gap_var, command=on_gap)
         gap_slider.pack(side="left", fill="x", expand=True, padx=6)
+        gap_slider.bind("<ButtonPress-1>", lambda _e: self._mark_slider_active(True))
+        gap_slider.bind("<ButtonRelease-1>", lambda _e: self._mark_slider_active(False))
         slider_specs.append((gap_var, self.lyric_overlay_line_gap))
 
         opacity_row = tk.Frame(win, bg=APP_BG)
@@ -1648,6 +1664,8 @@ class BoDianGUI:
         opacity_var = tk.DoubleVar(value=int(self.lyric_overlay_opacity * 100))
 
         def on_opacity(value):
+            if self._overlay_slider_syncing:
+                return
             opacity = max(0.3, min(1.0, float(value) / 100.0))
             self.lyric_overlay_opacity = opacity
             opacity_value.configure(text=f"{int(float(value))}%")
@@ -1657,6 +1675,8 @@ class BoDianGUI:
 
         opacity_slider = ttk.Scale(opacity_row, orient="horizontal", from_=30, to=100, variable=opacity_var, command=on_opacity)
         opacity_slider.pack(side="left", fill="x", expand=True, padx=6)
+        opacity_slider.bind("<ButtonPress-1>", lambda _e: self._mark_slider_active(True))
+        opacity_slider.bind("<ButtonRelease-1>", lambda _e: self._mark_slider_active(False))
         slider_specs.append((opacity_var, int(self.lyric_overlay_opacity * 100)))
 
         hint = tk.Label(
@@ -1674,15 +1694,21 @@ class BoDianGUI:
         def refresh_vars():
             if self._overlay_settings_win is not win:
                 return
+            if self._overlay_slider_active:
+                win.after(1500, refresh_vars)
+                return
             for var, current in zip(slider_specs, (
                 self.lyric_overlay_font_scale,
                 self.lyric_overlay_line_gap,
                 int(self.lyric_overlay_opacity * 100),
             )):
                 try:
+                    self._overlay_slider_syncing = True
                     var.set(current)
                 except tk.TclError:
                     pass
+                finally:
+                    win.after(120, self._slider_sync_done)
             win.after(1500, refresh_vars)
 
         win.after(1500, refresh_vars)
