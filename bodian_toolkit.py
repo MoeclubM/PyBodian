@@ -38,16 +38,24 @@ from bodian_media import (
 # ─── UTF-8 ──────────────────────────────────────────────────────────
 
 if sys.platform == "win32":
-    os.system("chcp 65001 >nul 2>&1")
+    # 打包成无控制台的 exe 时不执行 chcp，避免闪现控制台窗口
+    if not getattr(sys, "frozen", False):
+        os.system("chcp 65001 >nul 2>&1")
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        if sys.stdout:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if sys.stderr:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
 # ─── 配置 ───────────────────────────────────────────────────────────
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    # PyInstaller 打包后把状态目录放在 exe 旁边（便携模式）
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_STATE_DIR = os.path.join(BASE_DIR, ".bodian")
 AUTH_FILE = os.path.join(LOCAL_STATE_DIR, "auth.json")
 CONFIG_FILE = os.path.join(LOCAL_STATE_DIR, "config.json")
@@ -123,8 +131,11 @@ def load_local_config():
         "lyric_overlay_topmost": True,
         "lyric_overlay_locked": False,
         "lyric_overlay_theme": 0,
-        "lyric_overlay_opacity": 0.96,
+        "lyric_overlay_opacity": 1.0,
         "lyric_overlay_geometry": "",
+        "lyric_overlay_font_scale": 1.0,
+        "lyric_overlay_primary_color": "",
+        "lyric_overlay_line_gap": 0,
     })
     if config.get("lyric_overlay_geometry") in ("460x220+120+120", "720x280+120+120"):
         config["lyric_overlay_geometry"] = ""
@@ -206,6 +217,7 @@ class BoDianClient:
         )
         self.ffmpeg = shutil.which("ffmpeg")
         self.logged_in = False
+        self.last_download_error = ""
         self._log_free_sign_cache = None
         self._try_load_credentials()
 
@@ -492,7 +504,7 @@ class BoDianClient:
         self.logged_in = True
         self._save_credentials()
 
-    def logout(self):
+    def logout(self, quiet=False):
         self.uid = "-1"
         self.token = ""
         self.nickname = ""
@@ -510,7 +522,8 @@ class BoDianClient:
         self.logged_in = False
         if os.path.exists(AUTH_FILE):
             os.remove(AUTH_FILE)
-        print("  已登出")
+        if not quiet:
+            print("  已登出")
 
     def request_login_qr(self):
         data, resp = self._request_ok("/api/ucenter/login/qrCode", {
@@ -1267,7 +1280,11 @@ class BoDianClient:
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.decode("utf-8", errors="replace")[-400:])
 
-    def download(self, url, filepath, song=None):
+    def download(self, url, filepath, song=None, progress=True):
+        """下载音频并可选写入封面/元数据。
+
+        progress=False 时不向 stdout 打印进度条（TUI/GUI 中打印会破坏界面）。
+        """
         temp_dir = tempfile.mkdtemp(prefix="bodian_", dir=os.path.dirname(os.path.abspath(filepath)))
         temp_audio = os.path.join(temp_dir, os.path.basename(filepath))
         try:
@@ -1283,7 +1300,7 @@ class BoDianClient:
                         break
                     f.write(chunk)
                     downloaded += len(chunk)
-                    if total > 0:
+                    if progress and total > 0:
                         pct = downloaded * 100 / total
                         filled = int(pct // 2.5)
                         bar = "#" * filled + "-" * (40 - filled)
@@ -1303,10 +1320,13 @@ class BoDianClient:
             os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
             os.replace(temp_audio, filepath)
             size_mb = downloaded / 1024 / 1024
-            print(f"\n  OK: {filepath} ({size_mb:.1f}MB)")
+            if progress:
+                print(f"\n  OK: {filepath} ({size_mb:.1f}MB)")
             return True
         except Exception as e:
-            print(f"\n  下载失败: {e}")
+            self.last_download_error = str(e)
+            if progress:
+                print(f"\n  下载失败: {e}")
             return False
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

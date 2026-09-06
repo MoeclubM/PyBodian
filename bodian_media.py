@@ -116,3 +116,43 @@ def parse_lrc_lines(text):
             "text": clean,
         })
     return results
+
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_KANA_RE = re.compile(r"[\u3040-\u30ff]")
+_FOREIGN_RE = re.compile(r"[\u3040-\u30ffA-Za-z]")
+
+
+def mark_translation_lines(lines):
+    """按时间分组与语言特征标记翻译行，返回带 translation 标志的新行列表。"""
+    translations = [False] * len(lines)
+    index = 0
+    while index < len(lines):
+        group_end = index + 1
+        while group_end < len(lines) and lines[group_end]["time_ms"] == lines[index]["time_ms"]:
+            group_end += 1
+        if group_end - index > 1:
+            candidates = []
+            for group_index in range(index, group_end):
+                text = lines[group_index]["text"]
+                if _CJK_RE.search(text) and not _KANA_RE.search(text):
+                    candidates.append(group_index)
+            if len(candidates) == 1:
+                translations[candidates[0]] = True
+            else:
+                translations[index + 1] = True
+        index = group_end
+    for index, line in enumerate(lines):
+        if translations[index]:
+            continue
+        text = line["text"]
+        if _CJK_RE.search(text) and not _KANA_RE.search(text):
+            if index > 0:
+                prev = lines[index - 1]
+                if _FOREIGN_RE.search(prev["text"]) and abs(line["time_ms"] - prev["time_ms"]) <= 2500:
+                    translations[index] = True
+            if not translations[index] and index + 1 < len(lines):
+                next_line = lines[index + 1]
+                if _FOREIGN_RE.search(next_line["text"]) and abs(next_line["time_ms"] - line["time_ms"]) <= 2500:
+                    translations[index] = True
+    return [{**line, "translation": translations[index]} for index, line in enumerate(lines)]

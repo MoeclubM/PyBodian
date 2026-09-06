@@ -67,6 +67,7 @@ class BoDianPlayer:
         self.base_position_ms = 0
         self.started_at = None
         self.audio_driver = "wasapi" if sys.platform == "win32" else ""
+        self.volume = 100
         self.just_finished = False
         self._instances.add(self)
         self._install_signal_handlers()
@@ -75,6 +76,19 @@ class BoDianPlayer:
     def ensure_ready(self):
         if not self.ffplay:
             raise RuntimeError("未找到 ffplay，请先安装 FFmpeg 并确保 ffplay 可执行")
+
+    def set_volume(self, volume):
+        """设置音量 0-100；正在播放时会以当前位置短暂重启 ffplay 使其生效。"""
+        try:
+            volume = int(volume)
+        except (TypeError, ValueError):
+            return
+        volume = max(0, min(100, volume))
+        changed = volume != self.volume
+        self.volume = volume
+        if changed and self.state == "playing" and self.current_url:
+            self.base_position_ms = self.get_position_ms()
+            self._spawn(self.base_position_ms)
 
     def play(self, url, duration_ms=0, start_ms=0, audio_format=""):
         self.ensure_ready()
@@ -215,6 +229,8 @@ class BoDianPlayer:
         ]
         if start_ms > 0:
             args.extend(["-ss", f"{start_ms / 1000:.3f}"])
+        if self.volume != 100:
+            args.extend(["-volume", str(max(0, min(100, int(self.volume))))])
         args.append(self.current_url)
         env = os.environ.copy()
         if self.audio_driver:

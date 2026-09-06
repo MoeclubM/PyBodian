@@ -29,6 +29,7 @@ from bodian_toolkit import (
     _fmt_dur,
     _sanitize,
 )
+from bodian_media import mark_translation_lines
 
 
 if sys.platform == "win32":
@@ -304,8 +305,11 @@ class BoDianUI:
         self.lyric_overlay_topmost = bool(self.client.get_local_config("lyric_overlay_topmost", True))
         self.lyric_overlay_locked = bool(self.client.get_local_config("lyric_overlay_locked", False))
         self.lyric_overlay_theme = int(self.client.get_local_config("lyric_overlay_theme", 0) or 0)
-        self.lyric_overlay_opacity = float(self.client.get_local_config("lyric_overlay_opacity", 0.96) or 0.96)
+        self.lyric_overlay_opacity = float(self.client.get_local_config("lyric_overlay_opacity", 1.0) or 1.0)
         self.lyric_overlay_geometry = self.client.get_local_config("lyric_overlay_geometry", "")
+        self.lyric_overlay_font_scale = float(self.client.get_local_config("lyric_overlay_font_scale", 1.0) or 1.0)
+        self.lyric_overlay_primary_color = str(self.client.get_local_config("lyric_overlay_primary_color", "") or "")
+        self.lyric_overlay_line_gap = int(float(self.client.get_local_config("lyric_overlay_line_gap", 0) or 0))
         self.login_restore = None
         self.login_deadline = 0
         self.login_qr_code = ""
@@ -618,6 +622,9 @@ class BoDianUI:
             "lyric_overlay_theme": self.lyric_overlay_theme,
             "lyric_overlay_opacity": self.lyric_overlay_opacity,
             "lyric_overlay_geometry": self.lyric_overlay_geometry,
+            "lyric_overlay_font_scale": self.lyric_overlay_font_scale,
+            "lyric_overlay_primary_color": self.lyric_overlay_primary_color,
+            "lyric_overlay_line_gap": self.lyric_overlay_line_gap,
         }
 
     def _save_overlay_settings(self):
@@ -631,6 +638,9 @@ class BoDianUI:
             self.lyric_overlay_theme = int(settings.get("lyric_overlay_theme", self.lyric_overlay_theme) or 0)
             self.lyric_overlay_opacity = float(settings.get("lyric_overlay_opacity", self.lyric_overlay_opacity) or self.lyric_overlay_opacity)
             self.lyric_overlay_geometry = settings.get("lyric_overlay_geometry", self.lyric_overlay_geometry)
+            self.lyric_overlay_font_scale = float(settings.get("lyric_overlay_font_scale", self.lyric_overlay_font_scale) or 1.0)
+            self.lyric_overlay_primary_color = str(settings.get("lyric_overlay_primary_color", self.lyric_overlay_primary_color) or "")
+            self.lyric_overlay_line_gap = int(float(settings.get("lyric_overlay_line_gap", self.lyric_overlay_line_gap) or 0))
             self._save_overlay_settings()
 
         if threading.current_thread() is threading.main_thread():
@@ -1144,36 +1154,7 @@ class BoDianUI:
         if not lines:
             self._show_lyric_text(self.current_lyric_raw or "暂无歌词")
             return
-        translations = [False] * len(lines)
-        index = 0
-        while index < len(lines):
-            group_end = index + 1
-            while group_end < len(lines) and lines[group_end]["time_ms"] == lines[index]["time_ms"]:
-                group_end += 1
-            if group_end - index > 1:
-                candidates = []
-                for group_index in range(index, group_end):
-                    text = lines[group_index]["text"]
-                    if re.search(r"[\u4e00-\u9fff]", text) and not re.search(r"[\u3040-\u30ff]", text):
-                        candidates.append(group_index)
-                if len(candidates) == 1:
-                    translations[candidates[0]] = True
-                else:
-                    translations[index + 1] = True
-            index = group_end
-        for index, line in enumerate(lines):
-            if not translations[index]:
-                text = line["text"]
-                if re.search(r"[\u4e00-\u9fff]", text) and not re.search(r"[\u3040-\u30ff]", text):
-                    if index > 0:
-                        prev = lines[index - 1]
-                        if re.search(r"[\u3040-\u30ffA-Za-z]", prev["text"]) and abs(line["time_ms"] - prev["time_ms"]) <= 2500:
-                            translations[index] = True
-                    if not translations[index] and index + 1 < len(lines):
-                        next_line = lines[index + 1]
-                        if re.search(r"[\u3040-\u30ffA-Za-z]", next_line["text"]) and abs(next_line["time_ms"] - line["time_ms"]) <= 2500:
-                            translations[index] = True
-            self.current_lyric_lines.append({**line, "translation": translations[index]})
+        self.current_lyric_lines = mark_translation_lines(lines)
         self._refresh_lyric_rows()
         self._push_lyric_overlay(force=True)
 
@@ -1532,9 +1513,9 @@ class BoDianUI:
             ext = _detect_ext(actual_fmt, url)
             filename = _sanitize(f"{song['artist']} - {song['name']}.{ext}")
             filepath = os.path.join(self.download_dir, filename)
-            ok = self.client.download(url, filepath, song=song)
+            ok = self.client.download(url, filepath, song=song, progress=False)
             if not ok:
-                raise RuntimeError("下载失败")
+                raise RuntimeError(self.client.last_download_error or "下载失败")
             quality_desc = desc if actual_fmt == fmt else f"{actual_fmt.upper()} (服务端实际返回)"
             if "/pay3_v2/" in url:
                 quality_desc = f"{quality_desc} / 试听"
@@ -2155,7 +2136,7 @@ class BoDianUI:
     def _on_logout(self, *_args):
         self._next_playback_request()
         self.player.stop()
-        self.client.logout()
+        self.client.logout(quiet=True)
         self.current_song = None
         self.current_playback_quality_key = None
         self.cover_request_key += 1
