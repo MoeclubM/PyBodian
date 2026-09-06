@@ -497,6 +497,12 @@ class LyricOverlay:
         else:
             self._send("theme_next")
 
+    def reset_geometry(self):
+        if self._inprocess is not None:
+            self._inprocess.reset_geometry()
+        else:
+            self._send("reset_geometry")
+
     def set_theme(self, index):
         if self._inprocess is not None:
             self._inprocess.set_theme(int(index))
@@ -622,6 +628,11 @@ class _TkLyricOverlay:
         self._topbar = None
         self._topbar_visible = False
         self._controls_hovered = False
+        self._locked_pointer_inside = False
+        self._locked_pointer_enter_at = 0.0
+        self._locked_pointer_move_at = 0.0
+        self._locked_last_pointer_pos = None
+        self._locked_hover_active = False
         self._geometry_update_pending = False
         self._drag_label = None
         self._topmost_button = None
@@ -689,6 +700,9 @@ class _TkLyricOverlay:
 
     def next_theme(self):
         self._queue.put(("theme_next", None))
+
+    def reset_geometry(self):
+        self._queue.put(("reset_geometry", None))
 
     def set_theme(self, index):
         self._queue.put(("set_theme", int(index)))
@@ -1242,13 +1256,16 @@ class _TkLyricOverlay:
         self._topbar.place_forget()
         self._topbar_visible = False
 
+    LOCKED_HOVER_KEEPALIVE_SECONDS = 3.0
+
     def _refresh_controls_visibility(self):
         if not self._root or not self._topbar:
             return
         locked = bool(self.settings.get("lyric_overlay_locked", False))
         if locked:
-            # 锁定时只在指针真正悬停到浮窗不透明区域（Enter 事件）时显示控件
-            should_show = self._controls_hovered
+            # 锁定时：指针进入浮窗矩形范围即显示控件（保证有地方点“解锁”），
+            # 3 秒内无移动自动隐藏，避免常驻碍眼
+            should_show = self._controls_hovered or self._locked_hover_active
         else:
             should_show = True
         if should_show:
@@ -1326,6 +1343,7 @@ class _TkLyricOverlay:
             x = min(max(x, 10), max(10, screen_w - width - 10))
             y = min(max(y, 10), max(10, screen_h - height - 10))
         else:
+            # 未手动定位过的浮窗始终保持在底部居中，防止意外落到屏幕角落
             x = max(DEFAULT_HORIZONTAL_MARGIN, (screen_w - width) // 2)
             y = max(20, screen_h - height - 28)
         geometry = f"{width}x{height}+{x}+{y}"
@@ -1411,7 +1429,9 @@ class _TkLyricOverlay:
                 try:
                     screen_h = root.winfo_screenheight()
                     new_h = min(new_h, max(self._min_size()[1], screen_h - 80))
-                    root.geometry(f"{width}x{new_h}+{root.winfo_x()}+{root.winfo_y()}")
+                    pos_x = min(max(root.winfo_x(), 10), max(10, root.winfo_screenwidth() - width - 10))
+                    pos_y = min(max(root.winfo_y(), 10), max(10, screen_h - new_h - 10))
+                    root.geometry(f"{width}x{new_h}+{pos_x}+{pos_y}")
                     self._force_present = True
                     if self._hwnd and self._layered is not None:
                         self._layered.set_topmost(self._hwnd, True)
@@ -1646,9 +1666,31 @@ class _TkLyricOverlay:
         def watch_hover():
             if self._closing.is_set():
                 return
-            if not bool(self.settings.get("lyric_overlay_locked", False)):
-                # 仅未锁定时按矩形范围常显控件；锁定时依赖真实 Enter/Leave 悬停事件
-                self._controls_hovered = self._pointer_inside_root()
+            locked = bool(self.settings.get("lyric_overlay_locked", False))
+            inside = self._pointer_inside_root()
+            if not locked:
+                self._controls_hovered = inside
+                self._locked_hover_active = False
+            else:
+                now = time.monotonic()
+                if inside and not self._locked_pointer_inside:
+                    self._locked_pointer_enter_at = now
+                if inside != self._locked_pointer_inside:
+                    self._locked_last_pointer_pos = None
+                self._locked_pointer_inside = inside
+                if inside:
+                    try:
+                        pos = (int(root.winfo_pointerx()), int(root.winfo_pointery()))
+                    except Exception:
+                        pos = None
+                    if pos and pos != self._locked_last_pointer_pos:
+                        self._locked_last_pointer_pos = pos
+                        self._locked_pointer_move_at = now
+                    keepalive = float(getattr(self, "LOCKED_HOVER_KEEPALIVE_SECONDS", 3.0))
+                    anchor = max(self._locked_pointer_enter_at, self._locked_pointer_move_at)
+                    self._locked_hover_active = (now - anchor) < keepalive
+                else:
+                    self._locked_hover_active = False
             self._refresh_controls_visibility()
             root.after(150, watch_hover)
 
@@ -1690,6 +1732,11 @@ class _TkLyricOverlay:
                     except (TypeError, ValueError):
                         continue
                     self.settings["lyric_overlay_primary_color"] = ""
+                    self._apply_state()
+                    self._persist()
+                elif action == "reset_geometry":
+                    self.settings["lyric_overlay_geometry"] = ""
+                    self._user_positioned = False
                     self._apply_state()
                     self._persist()
                 elif action == "font_delta":
@@ -1832,6 +1879,8 @@ def _run_overlay_child():
                     overlay._queue.put(("set_theme", int(message.get("payload") or 0)))
                 except (TypeError, ValueError):
                     pass
+            elif action == "reset_geometry":
+                overlay._queue.put(("reset_geometry", None))
             elif action == "close":
                 overlay._queue.put(("close", None))
                 break

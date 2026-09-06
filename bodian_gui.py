@@ -75,6 +75,7 @@ class BoDianGUI:
         self.last_follow_song_id = None
         self.follow_started_at = 0.0
         self.next_follow_poll_at = 0.0
+        self.next_cred_sync_at = 0.0
         self.manual_started_at = 0.0
 
         self.current_songs = []
@@ -1340,13 +1341,30 @@ class BoDianGUI:
 
         def worker():
             last_resp = None
+            rounds = 0
             while time.time() < self.login_deadline:
-                data, resp = self.client.login_from_qr_status(qr_code, status_data)
+                rounds += 1
+                try:
+                    data, resp = self.client.login_from_qr_status(qr_code, status_data)
+                except Exception as exc:
+                    data, resp = None, {"code": -1, "msg": str(exc)}
                 if data and self.client.logged_in:
                     return data
                 last_resp = resp
+                # 扫码确认后登录态会写入本机波点官方客户端日志，换凭证接口
+                # 未及时返回时，从日志兜底同步（与重启后的补登录同一路径）
+                if rounds % 3 == 0:
+                    try:
+                        self.client._sync_main_credentials_from_logs()
+                    except Exception:
+                        pass
+                    if self.client.logged_in and self.client.uid != "-1":
+                        return {"synced": True}
                 time.sleep(0.8)
-            raise RuntimeError(last_resp.get("msg") if isinstance(last_resp, dict) else "换取凭证超时")
+            detail = ""
+            if isinstance(last_resp, dict):
+                detail = f"（code={last_resp.get('code')} {last_resp.get('msg') or ''}）".strip()
+            raise RuntimeError(f"换取凭证超时 {detail}")
 
         def done(_result, error):
             self._close_qr_window()
@@ -1405,6 +1423,14 @@ class BoDianGUI:
             self._qr_window = None
 
     def _restore_login_state(self):
+        if self.client.logged_in and self.client.uid != "-1":
+            self.login_qr_code = ""
+            self.login_deadline = 0
+            self.login_restore = None
+            self.qr_checking = False
+            self.next_qr_poll_at = 0
+            self._update_login_label()
+            return
         if not self.login_restore:
             return
         self.client.uid, self.client.token, self.client.nickname, self.client.logged_in = self.login_restore
@@ -1657,6 +1683,7 @@ class BoDianGUI:
         custom_row.pack(anchor="w", padx=14, pady=(6, 0))
         self._make_button(custom_row, "自定义颜色…", self._pick_overlay_color, accent=True).pack(side="left", padx=2)
         self._make_button(custom_row, "恢复主题色", self._reset_overlay_color).pack(side="left", padx=2)
+        self._make_button(custom_row, "复位浮窗位置", self._reset_overlay_geometry).pack(side="left", padx=2)
 
         slider_specs = []
 
@@ -1795,6 +1822,13 @@ class BoDianGUI:
             self.lyric_overlay.set_primary_color("")
         self._set_status("歌词颜色已恢复主题默认")
 
+    def _reset_overlay_geometry(self):
+        self.lyric_overlay_geometry = ""
+        self._save_overlay_settings()
+        if self.lyric_overlay:
+            self.lyric_overlay.reset_geometry()
+        self._set_status("浮窗位置已复位（底部居中）")
+
     # ── 主循环 ───────────────────────────────────────────────────
 
     def _overlay_position_state(self):
@@ -1824,6 +1858,7 @@ class BoDianGUI:
         self._poll_qr_login()
 
         if self.lyrics_only:
+            self._poll_credentials_from_logs()
             self._poll_follow_client()
             position_ms, _duration_ms, _state = self._overlay_position_state()
         else:
@@ -1876,6 +1911,24 @@ class BoDianGUI:
             self._set_status("已开启跟随：等待波点客户端播放…")
         else:
             self._set_status("已关闭跟随")
+
+    def _poll_credentials_from_logs(self):
+        if self.client.logged_in:
+            return
+        now = time.monotonic()
+        if now < self.next_cred_sync_at:
+            return
+        self.next_cred_sync_at = now + 60.0
+
+        def job():
+            self.client._sync_main_credentials_from_logs()
+
+        def done(_result, _error):
+            if self.client.logged_in:
+                self._update_login_label()
+                self._set_status("已从波点客户端日志同步到登录凭证")
+
+        self._async("正在从波点客户端日志同步登录状态", job, done)
 
     def _poll_follow_client(self):
         if not self.follow_client_enabled or self.follow_checking:

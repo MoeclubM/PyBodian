@@ -2039,6 +2039,14 @@ class BoDianUI:
         self._async("正在换取登录凭证", worker, done)
 
     def _restore_login_state(self):
+        if self.client.logged_in and self.client.uid != "-1":
+            self.login_qr_code = ""
+            self.login_deadline = 0
+            self.login_restore = None
+            self.qr_checking = False
+            self.next_qr_poll_at = 0
+            self._update_login_text()
+            return
         if not self.login_restore:
             return
         self._close_qr_overlay()
