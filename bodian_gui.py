@@ -29,6 +29,8 @@ from bodian_toolkit import (
     BoDianClient,
     _detect_ext,
     _fmt_dur,
+    _generate_qr_png,
+    _make_qr_url,
     _sanitize,
 )
 
@@ -113,6 +115,7 @@ class BoDianGUI:
         self.login_qr_code = ""
         self.qr_checking = False
         self.next_qr_poll_at = 0
+        self._qr_window = None
 
         self._build_root()
         self._build_style()
@@ -1288,12 +1291,8 @@ class BoDianGUI:
             self.login_qr_code = result["qr_code"]
             self.login_deadline = time.time() + 120
             self.next_qr_poll_at = 0
-            qr_url = (
-                "https://api.qrserver.com/v1/create-qr-code/"
-                f"?size=280x280&data={urllib.parse.quote(self.login_qr_code)}"
-            )
-            webbrowser.open(qr_url)
-            self._set_status("二维码已在浏览器打开，请用波点移动端扫描确认")
+            self._show_qr_window(self.login_qr_code)
+            self._set_status("请用波点 App 扫描二维码确认登录")
 
         self._async("正在请求二维码登录", worker, done)
 
@@ -1301,6 +1300,7 @@ class BoDianGUI:
         if not self.login_qr_code or self.qr_checking:
             return
         if time.time() > self.login_deadline:
+            self._close_qr_window()
             self._restore_login_state()
             self._set_status("二维码登录超时", warn=True)
             return
@@ -1323,7 +1323,9 @@ class BoDianGUI:
                 self._set_status("等待移动端确认二维码")
                 return
             if status == 3:
-                self._exchange_qr_login()
+                qr_code = self.login_qr_code
+                self.login_qr_code = ""
+                self._exchange_qr_login(qr_code, status_data)
                 return
             if status is None:
                 self.next_qr_poll_at = time.time() + 2
@@ -1333,15 +1335,29 @@ class BoDianGUI:
 
         self._async("正在检查二维码状态", worker, done)
 
-    def _exchange_qr_login(self):
+    def _exchange_qr_login(self, qr_code, status_data):
+        self._close_qr_window()
+
         def worker():
-            data, resp = self.client.users_login(uid="-1", token="")
-            if not data or not self.client.logged_in:
-                raise RuntimeError(resp.get("msg") if isinstance(resp, dict) else "换取凭证失败")
-            return data
+            last_resp = None
+            while time.time() < self.login_deadline:
+                data, resp = self.client.login_from_qr_status(qr_code, status_data)
+                if data and self.client.logged_in:
+                    return data
+                last_resp = resp
+                time.sleep(0.8)
+            raise RuntimeError(last_resp.get("msg") if isinstance(last_resp, dict) else "换取凭证超时")
 
         def done(_result, error):
+            self._close_qr_window()
             if error:
+                if self.client.logged_in and self.client.uid != "-1":
+                    self.login_qr_code = ""
+                    self.login_deadline = 0
+                    self.login_restore = None
+                    self._update_login_label()
+                    self._set_status("二维码登录成功")
+                    return
                 self._restore_login_state()
                 self._set_status(f"二维码登录失败: {error}", warn=True)
                 return
@@ -1352,6 +1368,41 @@ class BoDianGUI:
             self._set_status("二维码登录成功")
 
         self._async("正在换取登录凭证", worker, done)
+
+    def _show_qr_window(self, qr_code):
+        """弹窗展示官方登录链接的二维码（替代旧版浏览器打开方式）。"""
+        self._close_qr_window()
+        try:
+            png_data = _generate_qr_png(_make_qr_url(qr_code))
+            import io
+            image = Image.open(io.BytesIO(png_data))
+            photo = ImageTk.PhotoImage(image)
+        except Exception:
+            qr_url = (
+                "https://api.qrserver.com/v1/create-qr-code/"
+                f"?size=280x280&data={urllib.parse.quote(_make_qr_url(qr_code))}"
+            )
+            webbrowser.open(qr_url)
+            self._set_status("二维码已在浏览器打开，请用波点 App 扫描", warn=True)
+            return
+        win = tk.Toplevel(self.root)
+        win.title("扫码登录")
+        win.configure(bg="white")
+        win.resizable(False, False)
+        label = tk.Label(win, image=photo, bg="white")
+        label.image = photo
+        label.pack(padx=18, pady=(16, 4))
+        tk.Label(win, text="请用波点 App 扫码确认登录", bg="white", fg="#333333",
+                 font=FONT_MAIN).pack(padx=18, pady=(0, 14))
+        self._qr_window = win
+
+    def _close_qr_window(self):
+        if self._qr_window is not None:
+            try:
+                self._qr_window.destroy()
+            except tk.TclError:
+                pass
+            self._qr_window = None
 
     def _restore_login_state(self):
         if not self.login_restore:
@@ -1806,6 +1857,7 @@ class BoDianGUI:
             return
         self.shutting_down = True
         self._next_playback_request()
+        self._close_qr_window()
         if self.lyric_overlay:
             self.lyric_overlay.close()
             self.lyric_overlay = None
