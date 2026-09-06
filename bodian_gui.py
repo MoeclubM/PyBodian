@@ -1332,7 +1332,7 @@ class BoDianGUI:
                 self.next_qr_poll_at = time.time() + 2
                 return
             self._restore_login_state()
-            self._set_status(f"二维码登录未完成: {status_resp}", warn=True)
+            self._set_status(f"二维码登录未完成: {status_resp}；若手机已确认登录成功，重启本程序即可生效", warn=True)
 
         self._async("正在检查二维码状态", worker, done)
 
@@ -1364,7 +1364,7 @@ class BoDianGUI:
             detail = ""
             if isinstance(last_resp, dict):
                 detail = f"（code={last_resp.get('code')} {last_resp.get('msg') or ''}）".strip()
-            raise RuntimeError(f"换取凭证超时 {detail}")
+            raise RuntimeError(f"换取凭证超时 {detail}；若手机已确认登录成功，重启本程序即可生效")
 
         def done(_result, error):
             self._close_qr_window()

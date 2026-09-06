@@ -73,6 +73,10 @@ python bodian_cli.py login --extract
 python bodian_cli.py login --uid UID --token TOKEN
 ```
 
+> **扫码登录提示**：用波点 App 确认登录后，如果本程序界面没有立即显示登录状态，
+> **直接重启本程序**即可——登录凭证通常已经保存成功（这是波点新版扫码协议的已知问题，
+> 重启后程序会自动从本地读取登录态）。
+
 查看当前登录状态：
 
 ```bash

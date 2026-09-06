@@ -2014,7 +2014,8 @@ class BoDianUI:
                     return data
                 last_resp = resp
                 time.sleep(0.8)
-            raise RuntimeError(last_resp.get("msg") if isinstance(last_resp, dict) else "换取凭证超时")
+            detail = last_resp.get("msg") if isinstance(last_resp, dict) else ""
+            raise RuntimeError(f"换取凭证超时 {detail}；若手机已确认登录成功，重启本程序即可生效")
 
         def done(_result, error):
             if error:
